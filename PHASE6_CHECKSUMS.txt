@@ -1,0 +1,11 @@
+ManagerW.S Phase 6 — integrity artifacts
+
+Tests: 30/30 OK
+Python compile: OK
+
+Core files:
+713412e2570e6cc57b252cff7d4d7eed37260c40f12b9d77d9b75d420b4a2c07  /mnt/data/work/phase6/app.py
+0432b69bda12cc2094688d3e84b177c11f1f622a8c0e7da32e1696299a2ab756  /mnt/data/work/phase6/financial.py
+1b75888874a95d5d4707135bf34775a20d48d81f308164ea167ac84220611370  /mnt/data/work/phase6/tests/test_financial_engine.py
+fbd6ac99b8c661f05c13f1d9961c7b4e78b58c0e4674948b5f937a9516fa5408  /mnt/data/work/phase6/tests/test_phase6_functional.py
+28cbe79a0cd35836cf71ee5a83b815746425197229aaee9c709c854146ca069c  /mnt/data/work/phase6/tests/test_phase6_app_static.py

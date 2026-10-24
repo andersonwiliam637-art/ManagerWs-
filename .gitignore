@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.db
+instance/
+.env
+.venv/
+venv/
+*.log
+.DS_Store
+
+# Secretos y credenciales
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+service-account*.json
+
+# Herramientas y archivos locales
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/

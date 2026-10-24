@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+  <h1 class="section-title" style="margin-top:0;">Crédito #{{ credit.id }}</h1>
+  <div class="grid">
+    <div class="card">
+      <h3>{{ credit.client.name }}</h3>
+      <p>Principal: <strong>{{ money(credit.principal, user.currency) }}</strong></p>
+      <p>Total programado: <strong>{{ money(credit.total, user.currency) }}</strong></p>
+      <p>Pagado: <strong>{{ money(credit.paid, user.currency) }}</strong></p>
+      <p>Pendiente contractual: <strong>{{ money(credit.pending, user.currency) }}</strong></p><p>Mora pendiente: <strong>{{ money(credit.fees_pending, user.currency) }}</strong></p><p>Total pendiente: <strong>{{ money(credit.total_due, user.currency) }}</strong></p><p><a class="btn" href="{{ url_for('loan_payoff', id=credit.id) }}">Ver liquidación</a></p>
+      <p>Interés: {{ credit.interest_rate }}% · {{ credit.interest_method }} · {{ credit.term_count }} cuotas · {{ credit.frequency }}</p>
+      <p>Estado: <span class="badge {% if credit.status == 'paid' %}ok{% else %}no{% endif %}">{{ credit.status }}</span></p>
+    </div>
+    <div class="card">
+      <h3>Historial financiero</h3>
+      {% for e in credit.ledger_entries|reverse %}
+        <div style="padding:.55rem 0;border-bottom:1px solid rgba(255,255,255,.08);">
+          <strong>{{ e.entry_type }}</strong> · {{ money(e.amount|abs, e.currency) }}<br>
+          <small>{{ e.created_at.strftime('%Y-%m-%d %H:%M') }} · {{ e.reference or '' }}</small>
+        </div>
+      {% else %}
+        <p style="color:var(--muted);">Sin movimientos.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <h2 class="section-title">Plan de cuotas</h2>
+  <div class="card table-wrap" style="padding:0;">
+    <table>
+      <thead><tr><th>#</th><th>Vencimiento</th><th>Capital</th><th>Interés</th><th>Total</th><th>Pagado</th><th>Saldo</th><th>Mora</th><th>Estado</th></tr></thead>
+      <tbody>
+      {% for i in credit.installments %}
+        <tr>
+          <td>{{ i.number }}</td>
+          <td>{{ i.due_date.strftime('%Y-%m-%d') }}</td>
+          <td>{{ money(i.principal_due, user.currency) }}</td>
+          <td>{{ money(i.interest_due, user.currency) }}</td>
+          <td>{{ money(i.amount_due, user.currency) }}</td>
+          <td>{{ money(i.amount_paid, user.currency) }}</td>
+          <td>{{ money(i.balance, user.currency) }}</td><td>{{ money(i.late_fee_due-i.late_fee_paid, user.currency) }}</td>
+          <td>{{ i.status }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

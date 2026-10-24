@@ -1,0 +1,76 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+  <div class="text-center" style="margin-bottom: 2.5rem;">
+    <h1 style="font-family: 'Playfair Display', serif; font-size: 1.85rem; color: var(--gold-light); margin-bottom: 0.5rem;">
+      Planes de suscripción
+    </h1>
+    <p style="color: var(--muted); font-size: 0.95rem;">
+      Precios adaptados a {{ plan.name }} · Facturación mensual
+    </p>
+  </div>
+
+  <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+    {% for name, label in [('pro', 'Pro'), ('business', 'Business'), ('enterprise', 'Enterprise')] %}
+    <div class="card" style="{% if name == 'business' %}border-color: var(--border-gold); box-shadow: var(--shadow-gold);{% endif %} position: relative;">
+      {% if name == 'business' %}
+      <div style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%);
+                  background: linear-gradient(135deg, var(--gold), var(--gold-dark));
+                  color: #0B0B0D; padding: 0.3rem 0.9rem; border-radius: 20px;
+                  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.5px; white-space: nowrap;">
+        RECOMENDADO
+      </div>
+      {% endif %}
+
+      <h3 style="margin-top: {% if name == 'business' %}0.5rem{% else %}0{% endif %};">{{ label }}</h3>
+      <div class="kpi-value gold" style="margin: 0.75rem 0 1.25rem;">
+        {{ plan.symbol }}{{ plan[name] }}
+        <span style="font-size: 0.85rem; color: var(--muted); font-weight: 400;">/mes</span>
+      </div>
+
+      {% if logged %}
+        {% if paypal_ready[name] %}
+        <div class="notice" style="margin-bottom:0.4rem;">Precio de la suscripción PayPal: <strong>{{ paypal_currency }} {{ paypal_amounts[name] }}/mes</strong>. Puede ser distinto del precio local mostrado arriba.</div>
+        <form method="POST" action="{{ url_for('paypal_subscribe') }}" style="margin-bottom: 0.75rem;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="plan" value="{{ name }}">
+          <button type="submit" class="btn full">Suscribirme con PayPal · {{ paypal_currency }} {{ paypal_amounts[name] }}/mes</button>
+        </form>
+        {% else %}
+        <div class="notice" style="margin-bottom:0.75rem;">Suscripción recurrente PayPal no habilitada. El precio local mostrado arriba no es un importe de PayPal.</div>
+        {% endif %}
+
+        <details style="margin: 0.75rem 0; color: var(--muted); font-size: 0.85rem;">
+          <summary style="cursor: pointer; color: var(--text-secondary);">Otros métodos de pago</summary>
+          <div style="margin-top: 0.75rem; line-height: 1.6;">
+            <div><strong>Wise:</strong> {{ pay.wise }}</div>
+            <div style="margin-top: 0.35rem;"><strong>Transferencia GT:</strong> {{ pay.bank_gt }}</div>
+          </div>
+        </details>
+
+        <form method="POST" action="{{ url_for('checkout') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="plan" value="{{ name }}">
+          <label>Método utilizado</label>
+          <select name="method" required>
+            <option value="wise">Wise</option>
+            <option value="bank">Transferencia bancaria</option>
+          </select>
+          <label>Número de referencia (opcional)</label>
+          <input name="reference" placeholder="ID de transacción o referencia" maxlength="100">
+          <button type="submit" class="btn secondary full">Ya realicé el pago · Solicitar activación</button>
+        </form>
+      {% else %}
+        <a href="{{ url_for('login') }}" class="btn full" style="margin-top: 1rem;">
+          Iniciar sesión para suscribirse
+        </a>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <p class="text-center" style="margin-top: 2.5rem; color: var(--muted); font-size: 0.85rem;">
+    PayPal recurrente se activa mediante webhook verificado. Las transferencias bancarias continúan con validación manual.
+  </p>
+</div>
+{% endblock %}

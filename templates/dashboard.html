@@ -1,0 +1,138 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+  {% if not has_active_subscription %}
+    <div class="flash warning">
+      Su suscripción no está activa. 
+      <a href="{{ url_for('pricing') }}" style="color: inherit; text-decoration: underline; font-weight: 600;">Active un plan</a> 
+      para desbloquear todas las funciones.
+    </div>
+  {% endif %}
+
+  <div style="margin-bottom: 1.5rem;">
+    <h1 style="font-size: 1.5rem; font-weight: 600; letter-spacing: -0.3px;">
+      Bienvenido, {{ user.username }}
+    </h1>
+    <p style="color: var(--muted); font-size: 0.9rem; margin-top: 0.25rem;">
+      Plan actual: <span class="badge gold">{{ user.plan|capitalize }}</span>
+    </p>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Total prestado</h3>
+      <div class="kpi-value gold">{{ money(total_lent, user.currency) }}</div>
+    </div>
+    <div class="card">
+      <h3>Total cobrado</h3>
+      <div class="kpi-value success">{{ money(total_paid, user.currency) }}</div>
+    </div>
+    <div class="card">
+      <h3>Saldo pendiente</h3>
+      <div class="kpi-value danger">{{ money(pending, user.currency) }}</div>
+    </div>
+    <div class="card">
+      <h3>Clientes activos</h3>
+      <div class="kpi-value">{{ clients_count }}</div>
+    </div>
+  </div>
+
+  <div class="grid-2" style="margin-top: 1.5rem;">
+    <div class="card">
+      <h3>Cobranza · Últimos 6 meses</h3>
+      <div class="chart-box">
+        <canvas id="barChart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Estado de créditos</h3>
+      <div class="chart-box">
+        <canvas id="donaChart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+Chart.defaults.color = '#A1A1A6';
+Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+Chart.defaults.font.size = 12;
+
+new Chart(document.getElementById('barChart'), {
+  type: 'bar',
+  data: {
+    labels: {{ labels|tojson }},
+    datasets: [{
+      label: 'Cobrado',
+      data: {{ data|tojson }},
+      backgroundColor: 'rgba(201, 162, 39, 0.75)',
+      borderColor: 'rgba(201, 162, 39, 1)',
+      borderWidth: 1,
+      borderRadius: 6,
+      borderSkipped: false
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#16161A',
+        titleColor: '#E8D5A3',
+        bodyColor: '#F5F5F7',
+        borderColor: 'rgba(201, 162, 39, 0.3)',
+        borderWidth: 1,
+        padding: 12
+      }
+    },
+    scales: {
+      y: {
+        beginAtZero: true,
+        grid: { color: 'rgba(255,255,255,0.04)' },
+        ticks: { color: '#6E6E73' }
+      },
+      x: {
+        grid: { display: false },
+        ticks: { color: '#6E6E73' }
+      }
+    }
+  }
+});
+
+new Chart(document.getElementById('donaChart'), {
+  type: 'doughnut',
+  data: {
+    labels: {{ statuses.keys()|list|tojson }},
+    datasets: [{
+      data: {{ statuses.values()|list|tojson }},
+      backgroundColor: ['#2D9F6F', '#C9A227'],
+      borderWidth: 0,
+      hoverOffset: 6
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    cutout: '72%',
+    plugins: {
+      legend: {
+        position: 'bottom',
+        labels: {
+          padding: 16,
+          usePointStyle: true,
+          pointStyle: 'circle'
+        }
+      },
+      tooltip: {
+        backgroundColor: '#16161A',
+        titleColor: '#E8D5A3',
+        bodyColor: '#F5F5F7',
+        borderColor: 'rgba(201, 162, 39, 0.3)',
+        borderWidth: 1
+      }
+    }
+  }
+});
+</script>
+{% endblock %}

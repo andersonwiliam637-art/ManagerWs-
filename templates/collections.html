@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+  <h1>Cartera y cobranza</h1>
+  <p>La cartera se prioriza por días de mora y puede asignarse a responsables. Las gestiones quedan como historial auditable.</p>
+
+  <form method="get" action="{{ url_for('collections') }}">
+    <label>Gestor
+      <select name="collector_id">
+        <option value="">Todos</option>
+        {% for c in collectors %}<option value="{{ c.id }}" {% if request.args.get('collector_id') == c.id|string %}selected{% endif %}>{{ c.username }}</option>{% endfor %}
+      </select>
+    </label>
+    <label><input type="checkbox" name="unassigned" value="1" {% if request.args.get('unassigned') == '1' %}checked{% endif %}> Solo sin asignar</label>
+    <button type="submit">Filtrar</button>
+  </form>
+
+  <h2>Cartera</h2>
+  <table>
+    <thead><tr><th>Préstamo</th><th>Cliente</th><th>Saldo</th><th>Vencido</th><th>Mora</th><th>Responsable</th><th>Prioridad</th><th>Asignación</th></tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td><a href="{{ url_for('loan_detail', id=row.credit.id) }}">#{{ row.credit.id }}</a></td>
+        <td>{{ row.credit.client.name }}</td>
+        <td>{{ money(row.outstanding) }}</td>
+        <td>{{ money(row.overdue) }}</td>
+        <td>{{ row.days_overdue }} días</td>
+        <td>{{ row.assignment.collector.username if row.assignment else 'Sin asignar' }}</td>
+        <td>{{ row.priority }}</td>
+        <td>
+          {% if can_assign %}
+          <form method="post" action="{{ url_for('collection_assign') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="credit_id" value="{{ row.credit.id }}">
+            <select name="collector_id" required>
+              <option value="">Seleccionar</option>
+              {% for c in collectors %}<option value="{{ c.id }}" {% if row.assignment and row.assignment.collector_user_id == c.id %}selected{% endif %}>{{ c.username }}</option>{% endfor %}
+            </select>
+            <button type="submit">Asignar</button>
+          </form>
+          {% if row.assignment %}
+          <form method="post" action="{{ url_for('collection_unassign') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="credit_id" value="{{ row.credit.id }}">
+            <button type="submit">Desasignar</button>
+          </form>
+          {% endif %}
+          {% else %}—{% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8">No hay créditos que coincidan con el filtro.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Registrar gestión</h2>
+  <form method="post" action="{{ url_for('collection_activity_create') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Cliente ID <input type="number" name="client_id" required></label>
+    <label>Crédito ID <input type="number" name="credit_id"></label>
+    <label>Acción
+      <select name="action_type" required>
+        <option value="call">Llamada</option><option value="visit">Visita</option>
+        <option value="whatsapp">WhatsApp</option><option value="sms">SMS</option>
+        <option value="email">Correo</option><option value="promise">Promesa de pago</option>
+        <option value="payment">Pago</option><option value="other">Otra</option>
+      </select>
+    </label>
+    <label>Resultado <input type="text" name="outcome" maxlength="30"></label>
+    <label>Monto prometido <input type="number" name="promised_amount" min="0" step="0.01" value="0"></label>
+    <label>Fecha promesa <input type="datetime-local" name="promised_at"></label>
+    <label>Próxima acción <input type="datetime-local" name="next_action_at"></label>
+    <label>Notas <textarea name="note" maxlength="2000"></textarea></label>
+    <button type="submit">Registrar gestión</button>
+  </form>
+
+  <h2>Historial reciente</h2>
+  <table>
+    <thead><tr><th>Fecha</th><th>Cliente</th><th>Crédito</th><th>Acción</th><th>Resultado</th><th>Nota</th></tr></thead>
+    <tbody>
+    {% for a in activities %}
+      <tr><td>{{ a.created_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ a.client.name }}</td><td>{{ a.credit_id or '—' }}</td><td>{{ a.action_type }}</td><td>{{ a.outcome or '—' }}</td><td>{{ a.note or '—' }}</td></tr>
+    {% else %}<tr><td colspan="6">Todavía no hay gestiones registradas.</td></tr>{% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

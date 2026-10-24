@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ManagerW.S | Elite Credit Platform</title>
+<link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+<meta name="theme-color" content="#0B0B0D">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='icon-192.png') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }</script>
+<style>
+:root {
+  --bg: #0B0B0D;
+  --bg-elevated: #111114;
+  --card: #16161A;
+  --card-hover: #1C1C21;
+  --border: #2A2A2F;
+  --border-gold: rgba(201, 162, 39, 0.35);
+  --text: #F5F5F7;
+  --text-secondary: #A1A1A6;
+  --muted: #6E6E73;
+  --gold: #C9A227;
+  --gold-light: #E8D5A3;
+  --gold-dark: #9A7B1A;
+  --platinum: #C0C0C5;
+  --success: #2D9F6F;
+  --danger: #C75050;
+  --warning: #C9A227;
+  --shadow: 0 8px 32px rgba(0,0,0,0.45);
+  --shadow-gold: 0 4px 24px rgba(201, 162, 39, 0.15);
+  --radius: 12px;
+  --radius-lg: 16px;
+  --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(201, 162, 39, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(201, 162, 39, 0.04), transparent);
+}
+
+/* Navigation */
+nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.85rem 2rem;
+  background: rgba(11, 11, 13, 0.92);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.logo {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--gold-light);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.logo span {
+  font-size: 0.7rem;
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  margin-left: 0.4rem;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.nav-links a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: var(--transition);
+  letter-spacing: 0.2px;
+}
+
+.nav-links a:hover {
+  color: var(--gold-light);
+  background: rgba(201, 162, 39, 0.08);
+}
+
+.nav-links a.active {
+  color: var(--gold);
+  background: rgba(201, 162, 39, 0.12);
+}
+
+/* Layout */
+.container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+.grid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.grid-2 {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+}
+
+/* Cards - Luxury */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  position: relative;
+  box-shadow: var(--shadow);
+  transition: var(--transition);
+}
+
+.card:hover {
+  border-color: var(--border-gold);
+  box-shadow: var(--shadow-gold);
+  background: var(--card-hover);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.card h3 {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  margin-bottom: 0.6rem;
+}
+
+.kpi-value {
+  font-size: 1.85rem;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-value.gold { color: var(--gold-light); }
+.kpi-value.success { color: var(--success); }
+.kpi-value.danger { color: var(--danger); }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  background: linear-gradient(135deg, var(--gold), var(--gold-dark));
+  color: #0B0B0D;
+  border: none;
+  padding: 0.7rem 1.4rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-decoration: none;
+  letter-spacing: 0.3px;
+  transition: var(--transition);
+  box-shadow: 0 2px 12px rgba(201, 162, 39, 0.25);
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 18px rgba(201, 162, 39, 0.35);
+  background: linear-gradient(135deg, var(--gold-light), var(--gold));
+}
+
+.btn:active { transform: translateY(0); }
+
+.btn.secondary {
+  background: transparent;
+  color: var(--gold-light);
+  border: 1px solid var(--border-gold);
+  box-shadow: none;
+}
+
+.btn.secondary:hover {
+  background: rgba(201, 162, 39, 0.1);
+  border-color: var(--gold);
+}
+
+.btn.danger {
+  background: linear-gradient(135deg, #C75050, #9A3A3A);
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(199, 80, 80, 0.25);
+}
+
+.btn.small {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.75rem;
+}
+
+.btn.full { width: 100%; }
+
+/* Forms */
+label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 0.35rem;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+input, select, textarea {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+  margin-bottom: 1rem;
+  transition: var(--transition);
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px rgba(201, 162, 39, 0.12);
+}
+
+/* Tables */
+.table-wrap {
+  overflow-x: auto;
+  border-radius: var(--radius);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+th {
+  text-align: left;
+  padding: 0.85rem 1rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0,0,0,0.2);
+}
+
+td {
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+tr:hover td {
+  background: rgba(201, 162, 39, 0.03);
+  color: var(--text);
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.7rem;
+  border-radius: 20px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.badge.ok {
+  background: rgba(45, 159, 111, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(45, 159, 111, 0.25);
+}
+
+.badge.no {
+  background: rgba(199, 80, 80, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(199, 80, 80, 0.25);
+}
+
+.badge.gold {
+  background: rgba(201, 162, 39, 0.12);
+  color: var(--gold-light);
+  border: 1px solid rgba(201, 162, 39, 0.25);
+}
+
+/* Flash messages */
+.flash {
+  padding: 0.9rem 1.25rem;
+  border-radius: 8px;
+  margin: 1rem auto;
+  max-width: 1280px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+
+.flash.success {
+  background: rgba(45, 159, 111, 0.1);
+  color: var(--success);
+  border-color: rgba(45, 159, 111, 0.25);
+}
+
+.flash.warning {
+  background: rgba(201, 162, 39, 0.1);
+  color: var(--gold-light);
+  border-color: rgba(201, 162, 39, 0.25);
+}
+
+.flash.danger {
+  background: rgba(199, 80, 80, 0.1);
+  color: var(--danger);
+  border-color: rgba(199, 80, 80, 0.25);
+}
+
+/* Charts */
+.chart-box {
+  height: 280px;
+  position: relative;
+}
+
+.section-title {
+  margin: 2rem 0 1.25rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border), transparent);
+}
+
+/* Footer */
+footer {
+  padding: 3rem 1.5rem 2rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  border-top: 1px solid var(--border);
+  margin-top: 3rem;
+}
+
+footer a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+footer a:hover { color: var(--gold); }
+
+/* Floating actions */
+.floating-actions {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.floating-actions a {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+  text-decoration: none;
+  box-shadow: var(--shadow);
+  transition: var(--transition);
+  border: 1px solid transparent;
+}
+
+.floating-actions a:hover {
+  transform: scale(1.08);
+}
+
+.floating-actions .paypal {
+  background: #003087;
+  color: #fff;
+  border-color: #0070ba;
+}
+
+.floating-actions .whatsapp {
+  background: #075E54;
+  color: #fff;
+  border-color: #25D366;
+}
+
+/* Utility */
+.text-center { text-align: center; }
+.mt-1 { margin-top: 0.5rem; }
+.mt-2 { margin-top: 1rem; }
+.mb-2 { margin-bottom: 1rem; }
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 1.5rem 0;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  nav {
+    padding: 0.75rem 1rem;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .container { padding: 1.25rem 1rem; }
+  .kpi-value { font-size: 1.5rem; }
+  .floating-actions { bottom: 1rem; right: 1rem; }
+  .floating-actions a { width: 44px; height: 44px; }
+}
+
+/* Login specific */
+.auth-wrapper {
+  max-width: 420px;
+  margin: 3rem auto 2rem;
+}
+
+.auth-card {
+  padding: 2rem;
+}
+
+.auth-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.5rem;
+  text-align: center;
+  margin-bottom: 0.25rem;
+  color: var(--gold-light);
+}
+
+.auth-subtitle {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 1.75rem;
+}
+</style>
+</head>
+<body>
+<nav>
+  <a href="{{ url_for('index') }}" class="logo">
+    ManagerW.S
+    <span>Elite</span>
+  </a>
+  <div class="nav-links">
+    <a href="{{ url_for('pricing') }}">Planes</a>
+    {% if session.user_id %}
+      {% if session.role == 'admin' %}
+        <a href="{{ url_for('admin_dashboard') }}">Administración</a>
+      {% else %}
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('clients') }}">Clientes</a>
+      {% endif %}
+      <form method="POST" action="{{ url_for('logout') }}" style="display:inline"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit" style="background:none;border:0;color:inherit;padding:0;cursor:pointer">Cerrar sesión</button></form>
+    {% else %}
+      <a href="{{ url_for('login') }}">Acceder</a>
+    {% endif %}
+  </div>
+</nav>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="flash {{ cat }}">{{ msg }}</div>
+  {% endfor %}
+{% endwith %}
+
+{% block content %}{% endblock %}
+
+<div class="floating-actions">
+  <a href="https://www.paypal.com/paypalme/andersonwiliam" target="_blank" class="paypal" title="PayPal" rel="noopener">P</a>
+  <a href="https://wa.me/50254154016" target="_blank" class="whatsapp" title="WhatsApp" rel="noopener">W</a>
+</div>
+
+<footer>
+  <div style="margin-bottom: 0.5rem; color: var(--text-secondary); font-weight: 500;">ManagerW.S Elite Credit Platform</div>
+  <div>
+    <a href="{{ url_for('terms') }}">Términos</a> · 
+    <a href="{{ url_for('privacy') }}">Privacidad</a> · 
+    Soporte: <a href="https://wa.me/50254154016">+502 5415 4016</a>
+  </div>
+  <div style="margin-top: 0.75rem; font-size: 0.75rem;">© 2026 · Diseñado para rendimiento y confianza</div>
+</footer>
+</body>
+</html>
