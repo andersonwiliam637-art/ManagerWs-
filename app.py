@@ -70,8 +70,10 @@ if db_url and db_url.startswith('postgres://'):
     db_url = db_url.replace('postgres://', 'postgresql://', 1)
 if IS_PRODUCTION and not db_url:
     raise RuntimeError('DATABASE_URL debe estar definida en producción.')
-if IS_PRODUCTION and not os.environ.get('SMTP_HOST'):
-    raise RuntimeError('SMTP_HOST debe estar definido en producción para verificación y recuperación de cuentas.')
+if IS_PRODUCTION and not (os.environ.get('RESEND_API_KEY') or os.environ.get('SMTP_HOST')):
+    raise RuntimeError('Configura RESEND_API_KEY (recomendado) o SMTP_HOST para el envío de correos en producción.')
+if IS_PRODUCTION and os.environ.get('RESEND_API_KEY') and not (os.environ.get('EMAIL_FROM') or os.environ.get('SMTP_FROM')):
+    raise RuntimeError('EMAIL_FROM debe estar definido cuando se utiliza Resend.')
 if IS_PRODUCTION and not os.environ.get('REDIS_URL'):
     raise RuntimeError('REDIS_URL debe estar definida en producción para rate limiting compartido entre instancias.')
 
@@ -186,9 +188,41 @@ def audit(action, *, actor_user_id=None, organization_id=None, target_type=None,
 
 
 def send_email(to, subject, body):
+    # Resend HTTP API is preferred: it works on Render Free, where outbound
+    # SMTP ports are restricted. SMTP remains available as a compatibility fallback.
+    resend_api_key = os.environ.get('RESEND_API_KEY')
+    email_from = os.environ.get('EMAIL_FROM') or os.environ.get('SMTP_FROM')
+
+    if resend_api_key:
+        if not email_from:
+            logger.error('EMAIL_FROM no configurado para Resend.')
+            return False
+        try:
+            response = requests.post(
+                'https://api.resend.com/emails',
+                headers={
+                    'Authorization': f'Bearer {resend_api_key}',
+                    'Content-Type': 'application/json',
+                },
+                json={
+                    'from': email_from,
+                    'to': [to],
+                    'subject': subject,
+                    'text': body,
+                },
+                timeout=15,
+            )
+            if response.status_code not in (200, 201):
+                logger.error('Resend rechazó el envío. HTTP %s.', response.status_code)
+                return False
+            return True
+        except requests.RequestException:
+            logger.exception('No se pudo enviar el correo mediante Resend.')
+            return False
+
     host = os.environ.get('SMTP_HOST')
     if not host:
-        logger.warning('SMTP no configurado; correo para %s no enviado.', to)
+        logger.warning('Proveedor de correo no configurado; mensaje no enviado.')
         return False
     msg = EmailMessage()
     msg['Subject'] = subject
@@ -206,7 +240,7 @@ def send_email(to, subject, body):
             smtp.send_message(msg)
         return True
     except Exception:
-        logger.exception('No se pudo enviar correo a %s', to)
+        logger.exception('No se pudo enviar el correo mediante SMTP.')
         return False
 
 # ---------------------------------------------------------------------------
