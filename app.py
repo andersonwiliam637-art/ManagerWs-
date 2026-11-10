@@ -2175,7 +2175,7 @@ def approve_payment(id):
     if not current:
         current = Subscription(user_id=pr.user_id, organization_id=pr.organization_id)
         db.session.add(current)
-    current.provider = 'manual'
+    current.provider = 'recurrente' if pr.method == 'recurrente' else 'manual'
     current.plan = pr.plan
     current.currency = pr.currency
     current.amount = pr.amount
@@ -2183,6 +2183,13 @@ def approve_payment(id):
     current.current_period_start = now
     current.current_period_end = now + timedelta(days=30)
     current.cancel_at_period_end = False
+    if pr.method == 'recurrente':
+        current.last_payment_at = now
+        current.metadata_json = {
+            **(current.metadata_json or {}),
+            'payment_request_id': pr.id,
+            'payment_reference': pr.reference,
+        }
     pr.status = 'approved'
     # Subscription is authoritative. Legacy user flags are intentionally not used for access control.
     audit('MANUAL_SUBSCRIPTION_APPROVED', actor_user_id=session.get('user_id'), organization_id=pr.organization_id,
