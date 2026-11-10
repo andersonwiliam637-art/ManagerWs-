@@ -1104,7 +1104,7 @@ def resend_verification():
             if not send_email(
                 user.email,
                 'Verifica tu cuenta de ManagerW.S',
-                f'Verifica tu cuenta aquí:\\n\\n{verification_url}\\n\\nEl enlace vence en 24 horas.',
+                f'Verifica tu cuenta aquí:\n\n{verification_url}\n\nEl enlace vence en 24 horas.',
             ):
                 logger.warning('No se pudo reenviar la verificación para user_id=%s.', user.id)
 
