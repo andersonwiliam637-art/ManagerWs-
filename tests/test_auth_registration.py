@@ -13,7 +13,7 @@ os.environ["REDIS_URL"] = "memory://"
 import app as managerws  # noqa: E402
 
 
-class AuthRegistrationTests:
+class TestAuthRegistration:
     def setup_method(self):
         managerws.app.config.update(
             TESTING=True,
