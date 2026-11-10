@@ -1,18 +1,48 @@
 {% extends 'base.html' %}
 {% block content %}
+{% set plan_content = {
+  'pro': {
+    'tagline': 'Para operaciones pequeñas que necesitan orden y control diario.',
+    'benefits': [
+      'Gestión de clientes y expedientes.',
+      'Registro de créditos y cálculo de interés simple o amortizado.',
+      'Calendarios de cuotas semanales, quincenales o mensuales.',
+      'Registro de pagos, saldos pendientes y vencimientos.'
+    ]
+  },
+  'business': {
+    'tagline': 'Para negocios que coordinan cartera, solicitudes y cobranza.',
+    'benefits': [
+      'Todo lo incluido en Pro.',
+      'Registro, revisión y resolución de solicitudes de crédito.',
+      'Seguimiento de cartera y cuotas vencidas.',
+      'Asignación de créditos y seguimiento de cobranza por equipo.'
+    ]
+  },
+  'enterprise': {
+    'tagline': 'Para operaciones que necesitan mayor trazabilidad y gobierno interno.',
+    'benefits': [
+      'Todo lo incluido en Business.',
+      'Roles y permisos por función para el equipo.',
+      'Registro de auditoría de las operaciones.',
+      'Libro mayor, trazabilidad de pagos y reversos financieros.'
+    ]
+  }
+} %}
 <div class="container">
   <div class="text-center" style="margin-bottom: 2.5rem;">
     <h1 style="font-family: 'Playfair Display', serif; font-size: 1.85rem; color: var(--gold-light); margin-bottom: 0.5rem;">
       Planes de suscripción
     </h1>
     <p style="color: var(--muted); font-size: 0.95rem;">
-      Precios adaptados a {{ plan.name }} · Facturación mensual
+      Precios adaptados a {{ plan.name }} · Suscripción mensual
     </p>
   </div>
 
-  <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));">
+  <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); align-items: stretch;">
     {% for name, label in [('pro', 'Pro'), ('business', 'Business'), ('enterprise', 'Enterprise')] %}
-    <div class="card" style="{% if name == 'business' %}border-color: var(--border-gold); box-shadow: var(--shadow-gold);{% endif %} position: relative;">
+    {% set details = plan_content[name] %}
+    <div class="card" style="{% if name == 'business' %}border-color: var(--border-gold); box-shadow: var(--shadow-gold);{% endif %} position: relative; display: flex; flex-direction: column;">
       {% if name == 'business' %}
       <div style="position: absolute; top: -11px; left: 50%; transform: translateX(-50%);
                   background: linear-gradient(135deg, var(--gold), var(--gold-dark));
@@ -23,45 +53,73 @@
       {% endif %}
 
       <h3 style="margin-top: {% if name == 'business' %}0.5rem{% else %}0{% endif %};">{{ label }}</h3>
-      <div class="kpi-value gold" style="margin: 0.75rem 0 1.25rem;">
+      <p style="color: var(--muted); min-height: 3.2rem; margin: 0.35rem 0 0.5rem;">{{ details.tagline }}</p>
+      <div class="kpi-value gold" style="margin: 0.75rem 0 0.25rem;">
         {{ plan.symbol }}{{ plan[name] }}
         <span style="font-size: 0.85rem; color: var(--muted); font-weight: 400;">/mes</span>
       </div>
+      <p style="font-size: 0.78rem; color: var(--muted); margin: 0 0 1rem;">Renovación mensual · {{ plan.currency }}</p>
+
+      <div style="margin: 0 0 1.25rem;">
+        <h4 style="font-size: 0.9rem; margin-bottom: 0.65rem;">Beneficios incluidos</h4>
+        <ul style="margin: 0; padding-left: 1.2rem; color: var(--text-secondary); font-size: 0.86rem; line-height: 1.65;">
+          {% for benefit in details.benefits %}
+          <li style="margin-bottom: 0.35rem;">{{ benefit }}</li>
+          {% endfor %}
+        </ul>
+      </div>
 
       {% if logged %}
-        {% if paypal_ready[name] %}
-        <div class="notice" style="margin-bottom:0.4rem;">Precio de la suscripción PayPal: <strong>{{ paypal_currency }} {{ paypal_amounts[name] }}/mes</strong>. Puede ser distinto del precio local mostrado arriba.</div>
-        <form method="POST" action="{{ url_for('paypal_subscribe') }}" style="margin-bottom: 0.75rem;">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="hidden" name="plan" value="{{ name }}">
-          <button type="submit" class="btn full">Suscribirme con PayPal · {{ paypal_currency }} {{ paypal_amounts[name] }}/mes</button>
-        </form>
-        {% else %}
-        <div class="notice" style="margin-bottom:0.75rem;">Suscripción recurrente PayPal no habilitada. El precio local mostrado arriba no es un importe de PayPal.</div>
-        {% endif %}
+        <div style="margin-top: auto;">
+          <a href="{{ recurrente_links[name] }}" class="btn full" target="_blank" rel="noopener noreferrer"
+             style="display: block; text-align: center; margin-bottom: 0.65rem;">
+            Suscribirme con Recurrente · {{ plan.symbol }}{{ plan[name] }}/mes
+          </a>
 
-        <details style="margin: 0.75rem 0; color: var(--muted); font-size: 0.85rem;">
-          <summary style="cursor: pointer; color: var(--text-secondary);">Otros métodos de pago</summary>
-          <div style="margin-top: 0.75rem; line-height: 1.6;">
-            <div><strong>Wise:</strong> {{ pay.wise }}</div>
-            <div style="margin-top: 0.35rem;"><strong>Transferencia GT:</strong> {{ pay.bank_gt }}</div>
+          {% if paypal_ready[name] %}
+          <div class="notice" style="margin-bottom:0.4rem;">
+            Suscripción PayPal: <strong>{{ paypal_currency }} {{ paypal_amounts[name] }}/mes</strong>.
           </div>
-        </details>
+          <form method="POST" action="{{ url_for('paypal_subscribe') }}" style="margin-bottom: 0.75rem;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="plan" value="{{ name }}">
+            <button type="submit" class="btn secondary full">
+              Suscribirme con PayPal · {{ paypal_currency }} {{ paypal_amounts[name] }}/mes
+            </button>
+          </form>
+          {% else %}
+          <div class="notice" style="margin-bottom:0.75rem;">
+            PayPal aún no está habilitado para este plan. Su botón aparecerá cuando se configuren y validen el Plan ID, precio, credenciales y webhook.
+          </div>
+          {% endif %}
 
-        <form method="POST" action="{{ url_for('checkout') }}">
-          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-          <input type="hidden" name="plan" value="{{ name }}">
-          <label>Método utilizado</label>
-          <select name="method" required>
-            <option value="wise">Wise</option>
-            <option value="bank">Transferencia bancaria</option>
-          </select>
-          <label>Número de referencia (opcional)</label>
-          <input name="reference" placeholder="ID de transacción o referencia" maxlength="100">
-          <button type="submit" class="btn secondary full">Ya realicé el pago · Solicitar activación</button>
-        </form>
+          <details style="margin: 0.75rem 0; color: var(--muted); font-size: 0.85rem;">
+            <summary style="cursor: pointer; color: var(--text-secondary);">Otros métodos de pago</summary>
+            <div style="margin-top: 0.75rem; line-height: 1.6;">
+              <div><strong>Wise:</strong> {{ pay.wise }}</div>
+              <div style="margin-top: 0.35rem;"><strong>Transferencia GT:</strong> {{ pay.bank_gt }}</div>
+            </div>
+          </details>
+
+          <form method="POST" action="{{ url_for('checkout') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="plan" value="{{ name }}">
+            <label>Método de pago realizado</label>
+            <select name="method" required>
+              <option value="recurrente">Recurrente</option>
+              <option value="wise">Wise</option>
+              <option value="bank">Transferencia bancaria</option>
+            </select>
+            <label>Referencia o ID de transacción</label>
+            <input name="reference" placeholder="Ingresa la referencia del pago Recurrente, Wise o banco" maxlength="100">
+            <button type="submit" class="btn secondary full">Enviar pago para verificación</button>
+            <p style="font-size: 0.76rem; color: var(--muted); margin-top: 0.55rem;">
+              Para Recurrente, vuelve a esta página después de pagar e ingresa la referencia. La activación requiere verificación administrativa.
+            </p>
+          </form>
+        </div>
       {% else %}
-        <a href="{{ url_for('login') }}" class="btn full" style="margin-top: 1rem;">
+        <a href="{{ url_for('login') }}" class="btn full" style="margin-top: auto;">
           Iniciar sesión para suscribirse
         </a>
       {% endif %}
@@ -69,8 +127,12 @@
     {% endfor %}
   </div>
 
-  <p class="text-center" style="margin-top: 2.5rem; color: var(--muted); font-size: 0.85rem;">
-    PayPal recurrente se activa mediante webhook verificado. Las transferencias bancarias continúan con validación manual.
+  <div class="notice" style="margin-top: 1.5rem; line-height: 1.6;">
+    <strong>Alcance actual de los planes:</strong> los beneficios describen módulos que ya existen en ManagerWS. En esta versión, el backend todavía no aplica límites ni bloqueos funcionales diferentes por nivel; las acciones disponibles dependen del rol del usuario y de que la suscripción de la organización esté activa. La verificación y activación de pagos Recurrente se realiza manualmente hasta completar el webhook automático.
+  </div>
+
+  <p class="text-center" style="margin-top: 1.5rem; color: var(--muted); font-size: 0.85rem;">
+    PayPal recurrente se activa mediante webhook verificado. Las transferencias y los pagos Recurrente reportados se verifican antes de activar la membresía.
   </p>
 </div>
 {% endblock %}
