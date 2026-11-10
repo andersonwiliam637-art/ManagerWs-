@@ -78,7 +78,7 @@
 
           {% if paypal_ready[name] %}
           <div class="notice" style="margin-bottom:0.4rem;">
-            Suscripción PayPal: <strong>{{ paypal_currency }} {{ paypal_amounts[name] }}/mes</strong>.
+            Precio de la suscripción PayPal: <strong>{{ paypal_currency }} {{ paypal_amounts[name] }}/mes</strong>.
           </div>
           <form method="POST" action="{{ url_for('paypal_subscribe') }}" style="margin-bottom: 0.75rem;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
