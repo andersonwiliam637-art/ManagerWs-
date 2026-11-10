@@ -118,6 +118,13 @@ PAYMENT_CONFIG = {
     'whatsapp': os.environ.get('WHATSAPP', ''),
 }
 
+# Hosted recurring checkout links supplied for the ManagerWS plans.
+RECURRENTE_CHECKOUT_URLS = {
+    'pro': 'https://app.recurrente.com/s/willy-salan/managerws-pro',
+    'business': 'https://app.recurrente.com/s/willy-salan/managerws-bussines',
+    'enterprise': 'https://app.recurrente.com/s/willy-salan/managerws-enterprise',
+}
+
 PLAN_NAMES = {'Gratis', 'pro', 'business', 'enterprise'}
 DUMMY_PASSWORD_HASH = generate_password_hash('managerws-dummy-password', method='pbkdf2:sha256:600000')
 SUBSCRIPTION_STATUSES = {'approval_pending', 'trialing', 'active', 'past_due', 'canceled', 'unpaid', 'expired'}
@@ -1835,7 +1842,8 @@ def pricing():
     paypal_amounts = {name: paypal_price(name, pp_currency) for name in PAYPAL_PLAN_TIERS}
     return render_template('pricing.html', plan=plan, country=country, pay=PAYMENT_CONFIG,
                            paypal_ready=paypal_ready, paypal_amounts=paypal_amounts,
-                           paypal_currency=pp_currency, logged='user_id' in session)
+                           paypal_currency=pp_currency, recurrente_links=RECURRENTE_CHECKOUT_URLS,
+                           logged='user_id' in session)
 
 
 @app.route('/billing/paypal/subscribe', methods=['POST'])
@@ -2072,8 +2080,11 @@ def checkout():
     plan = request.form.get('plan')
     method = request.form.get('method')
     reference = (request.form.get('reference') or '').strip()[:100]
-    if plan not in ('pro', 'business', 'enterprise') or method not in ('wise', 'bank'):
+    if plan not in ('pro', 'business', 'enterprise') or method not in ('wise', 'bank', 'recurrente'):
         flash('Solicitud de pago no válida.', 'danger')
+        return redirect(url_for('pricing'))
+    if method == 'recurrente' and not reference:
+        flash('Ingresa el ID o referencia de tu pago Recurrente para que podamos verificarlo.', 'warning')
         return redirect(url_for('pricing'))
     pr = PaymentRequest(user_id=user.id, organization_id=membership.organization_id, plan=plan,
                         method=method, amount=Decimal(str(plan_data[plan])), currency=plan_data['currency'],
@@ -2082,7 +2093,10 @@ def checkout():
     audit('MANUAL_BILLING_REQUESTED', actor_user_id=user.id, organization_id=membership.organization_id,
           target_type='payment_request', target_id='new', metadata={'plan': plan, 'method': method})
     db.session.commit()
-    flash('Solicitud enviada. El administrador verificará el pago. El billing automático se habilitará en la siguiente fase.', 'success')
+    if method == 'recurrente':
+        flash('Referencia Recurrente recibida. La membresía se activará después de verificar el pago en el panel del proveedor.', 'success')
+    else:
+        flash('Solicitud enviada. El administrador verificará el pago antes de activar la membresía.', 'success')
     return redirect(url_for('pricing'))
 
 # ---------------------------------------------------------------------------
@@ -2161,7 +2175,7 @@ def approve_payment(id):
     if not current:
         current = Subscription(user_id=pr.user_id, organization_id=pr.organization_id)
         db.session.add(current)
-    current.provider = 'manual'
+    current.provider = 'recurrente' if pr.method == 'recurrente' else 'manual'
     current.plan = pr.plan
     current.currency = pr.currency
     current.amount = pr.amount
@@ -2169,6 +2183,13 @@ def approve_payment(id):
     current.current_period_start = now
     current.current_period_end = now + timedelta(days=30)
     current.cancel_at_period_end = False
+    if pr.method == 'recurrente':
+        current.last_payment_at = now
+        current.metadata_json = {
+            **(current.metadata_json or {}),
+            'payment_request_id': pr.id,
+            'payment_reference': pr.reference,
+        }
     pr.status = 'approved'
     # Subscription is authoritative. Legacy user flags are intentionally not used for access control.
     audit('MANUAL_SUBSCRIPTION_APPROVED', actor_user_id=session.get('user_id'), organization_id=pr.organization_id,
