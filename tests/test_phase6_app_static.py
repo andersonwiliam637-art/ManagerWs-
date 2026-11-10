@@ -116,5 +116,21 @@ class Phase6AppStaticTests(unittest.TestCase):
         self.assertIn("sub.status = 'unpaid'", process)
 
 
+    def test_recurrente_checkout_links_and_manual_activation_are_wired(self):
+        self.assertIn("RECURRENTE_CHECKOUT_URLS", SOURCE)
+        self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-pro", SOURCE)
+        self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-bussines", SOURCE)
+        self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-enterprise", SOURCE)
+        checkout = function_body('checkout')
+        self.assertIn("('wise', 'bank', 'recurrente')", checkout)
+        self.assertIn("if method == 'recurrente' and not reference:", checkout)
+        approval = function_body('approve_payment')
+        self.assertIn("current.provider = 'recurrente' if pr.method == 'recurrente' else 'manual'", approval)
+        pricing = Path(__file__).resolve().parents[1].joinpath('templates/pricing.html').read_text(encoding='utf-8')
+        self.assertIn("{{ recurrente_links[name] }}", pricing)
+        self.assertIn("Beneficios incluidos", pricing)
+        self.assertIn("Suscribirme con PayPal", pricing)
+
+
 if __name__ == '__main__':
     unittest.main()
