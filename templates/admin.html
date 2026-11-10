@@ -36,7 +36,7 @@
         <tr>
           <td style="color: var(--text); font-weight: 500;">{{ p.user.username }}</td>
           <td><span class="badge gold">{{ p.plan }}</span></td>
-          <td>{{ p.method }}</td>
+          <td>{{ p.method|capitalize }}</td>
           <td>{{ p.currency }} {{ '%.2f'|format(p.amount) }}</td>
           <td>{{ p.reference or '—' }}</td>
           <td style="display: flex; gap: 0.4rem;">
