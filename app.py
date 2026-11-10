@@ -369,7 +369,7 @@ class BillingTransaction(db.Model):
 
 class BillingWebhookEvent(db.Model):
     __tablename__ = 'billing_webhook_event'
-    id = db.Column(db.BigInteger, primary_key=True)
+    id = db.Column(db.BigInteger().with_variant(db.Integer, 'sqlite'), primary_key=True)
     provider = db.Column(db.String(30), nullable=False)
     provider_event_id = db.Column(db.String(180), nullable=False)
     event_type = db.Column(db.String(120), nullable=False)
@@ -384,7 +384,7 @@ class BillingWebhookEvent(db.Model):
 
 class SubscriptionEvent(db.Model):
     __tablename__ = 'subscription_event'
-    id = db.Column(db.BigInteger, primary_key=True)
+    id = db.Column(db.BigInteger().with_variant(db.Integer, 'sqlite'), primary_key=True)
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'), nullable=False, index=True)
     subscription_id = db.Column(db.Integer, db.ForeignKey('subscription.id'), index=True)
     provider = db.Column(db.String(30), nullable=False)
