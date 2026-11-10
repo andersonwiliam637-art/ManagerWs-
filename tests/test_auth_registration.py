@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 # Import the Flask app against an isolated in-memory database, never production.
 os.environ.pop("FLASK_ENV", None)
-os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["DATABASE_URL"] = "sqlite:////tmp/managerws_auth_registration_tests.sqlite"
 os.environ["AUTO_CREATE_DB"] = "true"
 os.environ["SECRET_KEY"] = "managerws-auth-test-secret"
 os.environ["REDIS_URL"] = "memory://"
