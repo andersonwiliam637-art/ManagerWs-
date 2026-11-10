@@ -64,6 +64,19 @@
         </select>
         <button type="submit" class="btn secondary full">Registrarme</button>
       </form>
+
+      <details style="margin-top: 1rem;">
+        <summary style="cursor: pointer; text-align: center; color: var(--text-secondary);">
+          ¿No recibiste el correo de verificación?
+        </summary>
+        <form method="POST" action="{{ url_for('resend_verification') }}" style="margin-top: .75rem;">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <label>Correo electrónico de tu cuenta</label>
+          <input name="email" type="email" required maxlength="254" autocomplete="email"
+                 placeholder="correo@ejemplo.com">
+          <button type="submit" class="btn secondary full">Reenviar verificación</button>
+        </form>
+      </details>
       {% endif %}
     </div>
   </div>
