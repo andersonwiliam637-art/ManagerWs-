@@ -1070,7 +1070,46 @@ def register():
     sent = send_email(user.email, 'Verifica tu cuenta de ManagerW.S', f'Verifica tu cuenta aquí:\n\n{verification_url}\n\nEl enlace vence en 24 horas.')
     if not sent and not IS_PRODUCTION:
         logger.info('DEV email verification URL: %s', verification_url)
-    flash('Cuenta creada. Revisa tu correo para verificarla antes de usar la plataforma.', 'success')
+    if sent:
+        flash('Cuenta creada. Revisa tu correo para verificarla antes de usar la plataforma.', 'success')
+    else:
+        logger.warning('La cuenta user_id=%s fue creada, pero no se pudo enviar el correo de verificación.', user.id)
+        flash('Cuenta creada, pero el correo no pudo enviarse en este momento. Usa “Reenviar verificación” para intentarlo de nuevo.', 'warning')
+    return redirect(url_for('login'))
+
+
+@app.route('/resend-verification', methods=['POST'])
+@limiter.limit('3 per hour')
+def resend_verification():
+    email = (request.form.get('email') or '').strip().lower()
+    if email and len(email) <= 254:
+        user = User.query.filter(func.lower(User.email) == email).first()
+        if user and user.is_active and not user.email_verified:
+            EmailVerificationToken.query.filter_by(user_id=user.id, used_at=None).update(
+                {'used_at': utcnow()}, synchronize_session=False
+            )
+            raw = secrets.token_urlsafe(48)
+            db.session.add(EmailVerificationToken(
+                user_id=user.id,
+                token_hash=generate_password_hash(raw, method='pbkdf2:sha256:600000'),
+                expires_at=utcnow() + timedelta(hours=24),
+            ))
+            db.session.commit()
+
+            token = make_token({'uid': user.id, 'secret': raw}, 'email-verification')
+            verification_url = urljoin(
+                os.environ.get('PUBLIC_BASE_URL', request.host_url),
+                url_for('verify_email', token=token),
+            )
+            if not send_email(
+                user.email,
+                'Verifica tu cuenta de ManagerW.S',
+                f'Verifica tu cuenta aquí:\n\n{verification_url}\n\nEl enlace vence en 24 horas.',
+            ):
+                logger.warning('No se pudo reenviar la verificación para user_id=%s.', user.id)
+
+    # Keep the response identical for existing, unknown, active, and already verified emails.
+    flash('Si la cuenta existe y necesita verificación, enviaremos un nuevo enlace.', 'success')
     return redirect(url_for('login'))
 
 
