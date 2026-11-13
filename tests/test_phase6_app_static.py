@@ -13,12 +13,11 @@ def function_body(name):
 
 
 class Phase6AppStaticTests(unittest.TestCase):
-    def test_subscription_model_declares_provider_plan_id_used_by_paypal_checkout(self):
+    def test_subscription_model_retains_legacy_provider_plan_reference(self):
         start = SOURCE.index('class Subscription(db.Model):')
         end = SOURCE.index('class BillingTransaction(db.Model):', start)
         model = SOURCE[start:end]
         self.assertRegex(model, r'provider_plan_id\s*=\s*db\.Column\(db\.String\(180\)\)')
-        self.assertIn('provider_plan_id=pp_plan_id', SOURCE)
 
     def test_health_and_readiness_probes_exist(self):
         self.assertIn("@app.route('/health', methods=['GET'])", SOURCE)
@@ -71,37 +70,6 @@ class Phase6AppStaticTests(unittest.TestCase):
     def test_financial_float_is_absent(self):
         self.assertNotRegex(SOURCE, r'db\.Float')
 
-    def test_paypal_checkout_is_disabled_until_explicitly_enabled(self):
-        self.assertIn("os.environ.get('PAYPAL_ENABLED', 'false')", SOURCE)
-        self.assertIn("if not paypal_checkout_configured(plan, currency)", SOURCE)
-
-    def test_paypal_currency_and_amount_are_separate_from_localized_display_prices(self):
-        body = function_body('paypal_subscribe')
-        self.assertIn('currency = paypal_currency()', body)
-        self.assertIn('amount = paypal_price(plan, currency)', body)
-        self.assertNotIn('amount = Decimal(str(plan_data[plan]))', body)
-        self.assertIn('paypal_amounts=paypal_amounts', SOURCE)
-        self.assertIn('Precio de la suscripción PayPal', Path(__file__).resolve().parents[1].joinpath('templates/pricing.html').read_text(encoding='utf-8'))
-
-    def test_paypal_plan_is_checked_server_side_before_creating_subscription(self):
-        body = function_body('paypal_subscribe')
-        self.assertIn('paypal_validate_plan(pp_plan_id, currency, amount)', body)
-        validation = function_body('paypal_validate_plan')
-        self.assertIn("details.get('status') != 'ACTIVE'", validation)
-        self.assertIn("frequency.get('interval_unit') != 'MONTH'", validation)
-        self.assertIn("fixed.get('currency_code')", validation)
-
-    def test_paypal_webhook_handles_ignored_duplicate_events(self):
-        body = function_body('paypal_webhook')
-        self.assertIn("existing.status in {'processed', 'ignored'}", body)
-        self.assertIn('except IntegrityError:', body)
-
-    def test_live_paypal_handoff_never_requests_client_secret_in_chat(self):
-        handoff = Path(__file__).resolve().parents[1].joinpath('PAYPAL_LIVE_HANDOFF.md').read_text(encoding='utf-8')
-        self.assertIn('PAYPAL_ENABLED=false', handoff)
-        self.assertIn('No compartas aquí el PayPal Client Secret', handoff)
-        self.assertIn('/webhooks/paypal', handoff)
-
     def test_past_due_subscription_respects_grace_period(self):
         start = SOURCE.index('class Subscription(db.Model):')
         end = SOURCE.index('class BillingTransaction(db.Model):', start)
@@ -109,27 +77,32 @@ class Phase6AppStaticTests(unittest.TestCase):
         self.assertIn("if self.status == 'past_due':", model)
         self.assertIn('self.grace_period_end is not None and self.grace_period_end > now', model)
 
-    def test_successful_paypal_renewal_refreshes_period_from_provider(self):
-        process = function_body('process_paypal_event')
-        self.assertIn('paypal_get_subscription_details(sub.provider_subscription_id)', process)
-        self.assertIn("refreshed_billing.get('next_billing_time')", process)
-        self.assertIn("sub.status = 'unpaid'", process)
-
-
-    def test_recurrente_checkout_links_and_manual_activation_are_wired(self):
+    def test_recurrente_is_the_only_plan_checkout(self):
         self.assertIn("RECURRENTE_CHECKOUT_URLS", SOURCE)
         self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-pro", SOURCE)
         self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-bussines", SOURCE)
         self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-enterprise", SOURCE)
         checkout = function_body('checkout')
-        self.assertIn("('wise', 'bank', 'recurrente')", checkout)
-        self.assertIn("if method == 'recurrente' and not reference:", checkout)
-        approval = function_body('approve_payment')
-        self.assertIn("current.provider = 'recurrente' if pr.method == 'recurrente' else 'manual'", approval)
+        self.assertIn("exclusivamente por Recurrente", checkout)
+        self.assertNotIn("PaymentRequest(", checkout)
         pricing = Path(__file__).resolve().parents[1].joinpath('templates/pricing.html').read_text(encoding='utf-8')
         self.assertIn("{{ recurrente_links[name] }}", pricing)
         self.assertIn("Beneficios incluidos", pricing)
-        self.assertIn("Suscribirme con PayPal", pricing)
+        self.assertIn("mismo correo verificado", pricing)
+        self.assertNotIn("PayPal", pricing)
+        self.assertNotIn("url_for('checkout')", pricing)
+        self.assertNotIn("@app.route('/webhooks/paypal'", SOURCE)
+        self.assertNotIn("paypal_subscribe", SOURCE)
+
+    def test_neon_pooler_does_not_receive_unsupported_search_path_startup_parameter(self):
+        self.assertNotIn("'connect_args': {'options': '-csearch_path=managerws,public'}", SOURCE)
+        self.assertNotIn("options': '-csearch_path", SOURCE)
+
+    def test_registration_requires_a_complete_email_provider_before_persisting(self):
+        body = function_body('register')
+        self.assertIn('if not email_provider_configured():', body)
+        self.assertIn('if not sent:', body)
+        self.assertIn('db.session.rollback()', body)
 
 
 if __name__ == '__main__':

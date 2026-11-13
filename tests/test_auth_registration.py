@@ -24,6 +24,7 @@ class TestAuthRegistration:
             managerws.db.session.remove()
             managerws.db.drop_all()
             managerws.db.create_all()
+        managerws.limiter.enabled = False
         self.client = managerws.app.test_client()
 
     def register(self, username="empresa_demo", email="demo@example.com"):
@@ -39,8 +40,32 @@ class TestAuthRegistration:
             },
         )
 
+    def test_registration_is_blocked_without_email_provider_and_creates_no_records(self):
+        with patch.object(managerws, "email_provider_configured", return_value=False):
+            response = self.register()
+
+        assert response.status_code == 302
+        with managerws.app.app_context():
+            assert managerws.User.query.count() == 0
+            assert managerws.Organization.query.count() == 0
+            assert managerws.Membership.query.count() == 0
+            assert managerws.EmailVerificationToken.query.count() == 0
+
+    def test_registration_rolls_back_company_when_email_provider_rejects_message(self):
+        with patch.object(managerws, "email_provider_configured", return_value=True), patch.object(
+            managerws, "send_email", return_value=False
+        ):
+            response = self.register()
+
+        assert response.status_code == 302
+        with managerws.app.app_context():
+            assert managerws.User.query.count() == 0
+            assert managerws.Organization.query.count() == 0
+            assert managerws.Membership.query.count() == 0
+            assert managerws.EmailVerificationToken.query.count() == 0
+
     def test_register_creates_user_company_and_owner_membership_then_login_after_verification(self):
-        with patch.object(managerws, "send_email", return_value=True) as send_email:
+        with patch.object(managerws, "email_provider_configured", return_value=True), patch.object(managerws, "send_email", return_value=True) as send_email:
             response = self.register()
 
         assert response.status_code == 302
@@ -91,7 +116,7 @@ class TestAuthRegistration:
         assert dashboard.status_code == 200
 
     def test_duplicate_registration_does_not_create_another_company(self):
-        with patch.object(managerws, "send_email", return_value=True):
+        with patch.object(managerws, "email_provider_configured", return_value=True), patch.object(managerws, "send_email", return_value=True):
             self.register()
             duplicate = self.register(username="otra_empresa")
 
@@ -102,7 +127,7 @@ class TestAuthRegistration:
             assert managerws.Membership.query.count() == 1
 
     def test_expired_verification_can_be_resent_without_exposing_account_existence(self):
-        with patch.object(managerws, "send_email", return_value=True):
+        with patch.object(managerws, "email_provider_configured", return_value=True), patch.object(managerws, "send_email", return_value=True):
             self.register()
 
         with managerws.app.app_context():
@@ -111,7 +136,7 @@ class TestAuthRegistration:
             old_token.expires_at = managerws.utcnow() - managerws.timedelta(days=1)
             managerws.db.session.commit()
 
-        with patch.object(managerws, "send_email", return_value=True) as send_email:
+        with patch.object(managerws, "email_provider_configured", return_value=True), patch.object(managerws, "send_email", return_value=True) as send_email:
             resent = self.client.post(
                 "/resend-verification",
                 data={"email": "demo@example.com"},

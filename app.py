@@ -2,6 +2,7 @@ import os
 import secrets
 import logging
 import smtplib
+import ssl
 from datetime import datetime, timedelta, date
 from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
@@ -73,23 +74,12 @@ if db_url and db_url.startswith('postgres://'):
     db_url = db_url.replace('postgres://', 'postgresql://', 1)
 if IS_PRODUCTION and not db_url:
     raise RuntimeError('DATABASE_URL debe estar definida en producción.')
-if IS_PRODUCTION and not (os.environ.get('RESEND_API_KEY') or os.environ.get('SMTP_HOST')):
-    raise RuntimeError('Configura RESEND_API_KEY (recomendado) o SMTP_HOST para el envío de correos en producción.')
-if IS_PRODUCTION and os.environ.get('RESEND_API_KEY') and not (os.environ.get('EMAIL_FROM') or os.environ.get('SMTP_FROM')):
-    raise RuntimeError('EMAIL_FROM debe estar definido cuando se utiliza Resend.')
 if IS_PRODUCTION and not os.environ.get('REDIS_URL'):
     raise RuntimeError('REDIS_URL debe estar definida en producción para rate limiting compartido entre instancias.')
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_url or 'sqlite:///managerws_gt.db'
-# Production must target the existing private Supabase schema, never silently create
-# a parallel public-schema database. PostgreSQL's search_path keeps legacy ORM table
-# names bound to managerws while migrations continue to qualify managerws explicitly.
-if db_url and db_url.startswith(('postgresql://', 'postgresql+psycopg2://')):
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'connect_args': {'options': '-csearch_path=managerws,public'},
-        'pool_pre_ping': True,
-        'pool_recycle': 300,
-    }
+# Neon role managerws_owner already has search_path=managerws,public.
+# Do not pass options=-csearch_path in the startup packet: PgBouncer rejects it.
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
@@ -113,9 +103,6 @@ PLANS_PPP = {
 }
 
 PAYMENT_CONFIG = {
-    'paypal_email': os.environ.get('PAYPAL_EMAIL', ''),
-    'paypal_mode': os.environ.get('PAYPAL_MODE', 'sandbox'),
-    'paypal_client_id': os.environ.get('PAYPAL_CLIENT_ID', ''),
     'wise': os.environ.get('WISE_ACCOUNT', ''),
     'bank_gt': os.environ.get('BANK_GT', ''),
     'whatsapp': os.environ.get('WHATSAPP', ''),
@@ -197,16 +184,25 @@ def audit(action, *, actor_user_id=None, organization_id=None, target_type=None,
     db.session.add(entry)
 
 
-def send_email(to, subject, body):
-    # Resend HTTP API is preferred: it works on Render Free, where outbound
-    # SMTP ports are restricted. SMTP remains available as a compatibility fallback.
-    resend_api_key = os.environ.get('RESEND_API_KEY')
-    email_from = os.environ.get('EMAIL_FROM') or os.environ.get('SMTP_FROM')
+def email_provider_configured():
+    """Return whether at least one complete outbound email provider is configured."""
+    resend_ready = bool(
+        (os.environ.get('RESEND_API_KEY') or '').strip()
+        and (os.environ.get('EMAIL_FROM') or '').strip()
+    )
+    smtp_ready = bool(
+        (os.environ.get('SMTP_HOST') or '').strip()
+        and ((os.environ.get('SMTP_FROM') or os.environ.get('EMAIL_FROM') or '').strip())
+    )
+    return resend_ready or smtp_ready
 
-    if resend_api_key:
-        if not email_from:
-            logger.error('EMAIL_FROM no configurado para Resend.')
-            return False
+
+def send_email(to, subject, body):
+    """Send through Resend first, then fall back to SMTP when available."""
+    resend_api_key = (os.environ.get('RESEND_API_KEY') or '').strip()
+    email_from = (os.environ.get('EMAIL_FROM') or '').strip()
+
+    if resend_api_key and email_from:
         try:
             response = requests.post(
                 'https://api.resend.com/emails',
@@ -222,36 +218,47 @@ def send_email(to, subject, body):
                 },
                 timeout=15,
             )
-            if response.status_code not in (200, 201):
-                logger.error('Resend rechazó el envío. HTTP %s.', response.status_code)
-                return False
-            return True
-        except requests.RequestException:
-            logger.exception('No se pudo enviar el correo mediante Resend.')
-            return False
+            if response.status_code in (200, 201):
+                return True
+            logger.error('Resend rechazó el correo (HTTP %s); se intentará el proveedor SMTP alternativo.', response.status_code)
+        except requests.RequestException as exc:
+            logger.error('Resend no respondió (%s); se intentará el proveedor SMTP alternativo.', type(exc).__name__)
+    elif resend_api_key and not email_from:
+        logger.error('RESEND_API_KEY existe, pero EMAIL_FROM está vacío; se intentará SMTP si está configurado.')
 
-    host = os.environ.get('SMTP_HOST')
-    if not host:
-        logger.warning('Proveedor de correo no configurado; mensaje no enviado.')
+    host = (os.environ.get('SMTP_HOST') or '').strip()
+    sender = (os.environ.get('SMTP_FROM') or email_from).strip()
+    if not host or not sender:
+        logger.error('No hay un proveedor de correo completo: configura RESEND_API_KEY + EMAIL_FROM o SMTP_HOST + SMTP_FROM.')
         return False
+
     msg = EmailMessage()
     msg['Subject'] = subject
-    msg['From'] = os.environ.get('SMTP_FROM', 'no-reply@managerws.local')
+    msg['From'] = sender
     msg['To'] = to
     msg.set_content(body)
-    port = int(os.environ.get('SMTP_PORT', '587'))
-    username = os.environ.get('SMTP_USERNAME')
-    password = os.environ.get('SMTP_PASSWORD')
     try:
-        with smtplib.SMTP(host, port, timeout=10) as smtp:
-            smtp.starttls()
-            if username:
-                smtp.login(username, password or '')
-            smtp.send_message(msg)
+        port = int(os.environ.get('SMTP_PORT', '587'))
+        username = (os.environ.get('SMTP_USERNAME') or '').strip()
+        password = os.environ.get('SMTP_PASSWORD') or ''
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=15, context=ssl.create_default_context()) as smtp:
+                if username:
+                    smtp.login(username, password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as smtp:
+                smtp.ehlo()
+                smtp.starttls(context=ssl.create_default_context())
+                smtp.ehlo()
+                if username:
+                    smtp.login(username, password)
+                smtp.send_message(msg)
         return True
-    except Exception:
-        logger.exception('No se pudo enviar el correo mediante SMTP.')
+    except (OSError, smtplib.SMTPException, ValueError) as exc:
+        logger.error('No se pudo enviar el correo mediante SMTP (%s).', type(exc).__name__)
         return False
+
 
 # ---------------------------------------------------------------------------
 # Models — foundation / multi-tenant
@@ -312,7 +319,7 @@ class Subscription(db.Model):
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'), nullable=False, index=True)
     provider = db.Column(db.String(30), nullable=False, default='manual')
     provider_customer_id = db.Column(db.String(180), index=True)
-    # Present in managerws.subscription; required by the PayPal checkout flow below.
+    # Legacy provider-plan reference retained for compatibility with existing subscription rows.
     provider_plan_id = db.Column(db.String(180))
     provider_subscription_id = db.Column(db.String(180), unique=True, index=True)
     plan = db.Column(db.String(50), nullable=False, default='Gratis')
@@ -1043,6 +1050,10 @@ def register():
     if User.query.filter((User.username == username) | (User.email == email)).first():
         flash('El usuario o correo ya está registrado.', 'danger')
         return redirect(url_for('login'))
+    if not email_provider_configured():
+        flash('No podemos crear la cuenta todavía: el servicio de correo de verificación no está configurado. Intenta más tarde.', 'danger')
+        logger.error('Registro bloqueado: no hay proveedor de correo configurado.')
+        return redirect(url_for('login'))
 
     org_name = (request.form.get('organization_name') or username).strip()[:160]
     slug = f"{username.lower().replace(' ', '-')}-{secrets.token_hex(4)}"
@@ -1054,30 +1065,46 @@ def register():
         currency=currency,
     )
     org = Organization(name=org_name or username, slug=slug, business_type=business_type, currency=currency)
-    db.session.add_all([user, org])
-    db.session.flush()
-    db.session.add(Membership(organization_id=org.id, user_id=user.id, role='owner'))
-    # Only the newest verification token remains usable.
-    EmailVerificationToken.query.filter_by(user_id=user.id, used_at=None).update({'used_at': utcnow()}, synchronize_session=False)
     raw = secrets.token_urlsafe(48)
-    db.session.add(EmailVerificationToken(
-        user_id=user.id,
-        token_hash=generate_password_hash(raw, method='pbkdf2:sha256:600000'),
-        expires_at=utcnow() + timedelta(hours=24),
-    ))
-    audit('USER_REGISTERED', actor_user_id=user.id, organization_id=org.id, target_type='user', target_id=user.id)
-    db.session.commit()
 
-    token = make_token({'uid': user.id, 'secret': raw}, 'email-verification')
-    verification_url = urljoin(os.environ.get('PUBLIC_BASE_URL', request.host_url), url_for('verify_email', token=token))
-    sent = send_email(user.email, 'Verifica tu cuenta de ManagerW.S', f'Verifica tu cuenta aquí:\n\n{verification_url}\n\nEl enlace vence en 24 horas.')
-    if not sent and not IS_PRODUCTION:
-        logger.info('DEV email verification URL: %s', verification_url)
-    if sent:
-        flash('Cuenta creada. Revisa tu correo para verificarla antes de usar la plataforma.', 'success')
-    else:
-        logger.warning('La cuenta user_id=%s fue creada, pero no se pudo enviar el correo de verificación.', user.id)
-        flash('Cuenta creada, pero el correo no pudo enviarse en este momento. Usa “Reenviar verificación” para intentarlo de nuevo.', 'warning')
+    try:
+        db.session.add_all([user, org])
+        db.session.flush()
+        db.session.add(Membership(organization_id=org.id, user_id=user.id, role='owner'))
+        db.session.add(EmailVerificationToken(
+            user_id=user.id,
+            token_hash=generate_password_hash(raw, method='pbkdf2:sha256:600000'),
+            expires_at=utcnow() + timedelta(hours=24),
+        ))
+        audit('USER_REGISTERED', actor_user_id=user.id, organization_id=org.id,
+              target_type='user', target_id=user.id)
+
+        token = make_token({'uid': user.id, 'secret': raw}, 'email-verification')
+        base_url = os.environ.get('PUBLIC_BASE_URL') or request.url_root
+        verification_url = urljoin(base_url.rstrip('/') + '/', url_for('verify_email', token=token))
+        sent = send_email(
+            user.email,
+            'Verifica tu cuenta de ManagerW.S',
+            f'Verifica tu cuenta aquí:\n\n{verification_url}\n\nEl enlace vence en 24 horas.',
+        )
+        if not sent:
+            db.session.rollback()
+            flash('No se creó la cuenta porque no pudimos enviar el correo de verificación. Revisa la configuración de correo e inténtalo nuevamente.', 'danger')
+            return redirect(url_for('login'))
+
+        # Persist the company and owner only after the verification email was accepted.
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash('El usuario o correo ya está registrado. Comprueba los datos e inténtalo nuevamente.', 'danger')
+        return redirect(url_for('login'))
+    except Exception:
+        db.session.rollback()
+        logger.exception('Falló el alta de empresa; la transacción fue revertida.')
+        flash('No se pudo completar el registro. No se creó la empresa; inténtalo nuevamente.', 'danger')
+        return redirect(url_for('login'))
+
+    flash('Cuenta y empresa creadas. Revisa tu correo para verificar la cuenta antes de iniciar sesión.', 'success')
     return redirect(url_for('login'))
 
 
@@ -1085,31 +1112,42 @@ def register():
 @limiter.limit('3 per hour')
 def resend_verification():
     email = (request.form.get('email') or '').strip().lower()
-    if email and len(email) <= 254:
-        user = User.query.filter(func.lower(User.email) == email).first()
-        if user and user.is_active and not user.email_verified:
-            EmailVerificationToken.query.filter_by(user_id=user.id, used_at=None).update(
-                {'used_at': utcnow()}, synchronize_session=False
-            )
+    user = User.query.filter(func.lower(User.email) == email).first() if email and len(email) <= 254 else None
+    if user and user.is_active and not user.email_verified:
+        if not email_provider_configured():
+            logger.error('No se pudo reenviar verificación: no hay proveedor de correo configurado.')
+        else:
             raw = secrets.token_urlsafe(48)
-            db.session.add(EmailVerificationToken(
-                user_id=user.id,
-                token_hash=generate_password_hash(raw, method='pbkdf2:sha256:600000'),
-                expires_at=utcnow() + timedelta(hours=24),
-            ))
-            db.session.commit()
-
-            token = make_token({'uid': user.id, 'secret': raw}, 'email-verification')
-            verification_url = urljoin(
-                os.environ.get('PUBLIC_BASE_URL', request.host_url),
-                url_for('verify_email', token=token),
-            )
-            if not send_email(
-                user.email,
-                'Verifica tu cuenta de ManagerW.S',
-                f'Verifica tu cuenta aquí:\n\n{verification_url}\n\nEl enlace vence en 24 horas.',
-            ):
-                logger.warning('No se pudo reenviar la verificación para user_id=%s.', user.id)
+            try:
+                # Revoke the previous token only if a new message is accepted for sending.
+                EmailVerificationToken.query.filter_by(user_id=user.id, used_at=None).update(
+                    {'used_at': utcnow()}, synchronize_session=False
+                )
+                db.session.add(EmailVerificationToken(
+                    user_id=user.id,
+                    token_hash=generate_password_hash(raw, method='pbkdf2:sha256:600000'),
+                    expires_at=utcnow() + timedelta(hours=24),
+                ))
+                db.session.flush()
+                token = make_token({'uid': user.id, 'secret': raw}, 'email-verification')
+                base_url = os.environ.get('PUBLIC_BASE_URL') or request.url_root
+                verification_url = urljoin(
+                    base_url.rstrip('/') + '/',
+                    url_for('verify_email', token=token),
+                )
+                sent = send_email(
+                    user.email,
+                    'Verifica tu cuenta de ManagerW.S',
+                    f'Verifica tu cuenta aquí:\n\n{verification_url}\n\nEl enlace vence en 24 horas.',
+                )
+                if sent:
+                    db.session.commit()
+                else:
+                    db.session.rollback()
+                    logger.warning('No se pudo reenviar el correo de verificación; se conservó el estado anterior del token.')
+            except Exception:
+                db.session.rollback()
+                logger.exception('Error al reenviar el correo de verificación.')
 
     # Keep the response identical for existing, unknown, active, and already verified emails.
     flash('Si la cuenta existe y necesita verificación, enviaremos un nuevo enlace.', 'success')
@@ -1743,365 +1781,15 @@ def cash_close():
     audit('CASH_CLOSED',actor_user_id=user.id,organization_id=oid,target_type='cash_session',target_id=cs.id,metadata={'expected':str(expected),'counted':str(counted),'difference':str(cs.difference)}); db.session.commit()
     flash(f'Caja cerrada. Diferencia: {money(cs.difference,user.currency)}.','success'); return redirect(url_for('collections'))
 
-def paypal_base_url():
-    return 'https://api-m.paypal.com' if os.environ.get('PAYPAL_MODE','sandbox').lower() == 'live' else 'https://api-m.sandbox.paypal.com'
-
-def paypal_credentials_configured():
-    return bool(os.environ.get('PAYPAL_CLIENT_ID') and os.environ.get('PAYPAL_CLIENT_SECRET'))
-
-# PayPal Subscriptions only supports specific currencies. Do not infer a PayPal
-# billing currency from the visitor's country or silently convert local prices.
-PAYPAL_SUBSCRIPTION_CURRENCIES = {
-    'AUD', 'CAD', 'CHF', 'CZK', 'DKK', 'EUR', 'GBP', 'HKD', 'HUF', 'ILS',
-    'JPY', 'MXN', 'NOK', 'NZD', 'PHP', 'PLN', 'SEK', 'SGD', 'THB', 'TWD', 'USD'
-}
-PAYPAL_PLAN_TIERS = ('pro', 'business', 'enterprise')
-
-
-def paypal_currency():
-    return (os.environ.get('PAYPAL_CURRENCY', 'USD') or 'USD').strip().upper()
-
-
-def paypal_plan_env_key(plan, currency):
-    return f"PAYPAL_PLAN_{plan.upper()}_{currency.upper()}"
-
-
-def paypal_price_env_key(plan, currency):
-    return f"PAYPAL_PRICE_{plan.upper()}_{currency.upper()}"
-
-
-def paypal_plan_id(plan, currency):
-    return os.environ.get(paypal_plan_env_key(plan, currency), '').strip()
-
-
-def paypal_price(plan, currency):
-    raw = (os.environ.get(paypal_price_env_key(plan, currency), '') or '').strip()
-    if not raw:
-        return None
-    try:
-        value = Decimal(raw)
-    except InvalidOperation:
-        return None
-    if not value.is_finite() or value <= 0:
-        return None
-    return value.quantize(Decimal('0.01'))
-
-
-def paypal_checkout_configured(plan, currency=None):
-    currency = (currency or paypal_currency()).upper()
-    if os.environ.get('PAYPAL_ENABLED', 'false').strip().lower() not in {'1', 'true', 'yes', 'on'}:
-        return False
-    if currency not in PAYPAL_SUBSCRIPTION_CURRENCIES:
-        return False
-    if IS_PRODUCTION and os.environ.get('PAYPAL_MODE', 'sandbox').lower() != 'live':
-        return False
-    return bool(
-        paypal_credentials_configured()
-        and os.environ.get('PAYPAL_WEBHOOK_ID', '').strip()
-        and paypal_plan_id(plan, currency)
-        and paypal_price(plan, currency) is not None
-    )
-
-
-def paypal_validate_plan(plan_id, currency, expected_amount):
-    """Fail closed unless PayPal confirms an active, monthly plan at our displayed price."""
-    token = paypal_access_token()
-    response = requests.get(
-        paypal_base_url() + '/v1/billing/plans/' + plan_id,
-        headers={'Accept': 'application/json', 'Authorization': f'Bearer {token}'},
-        timeout=15,
-    )
-    response.raise_for_status()
-    details = response.json()
-    if details.get('status') != 'ACTIVE':
-        raise ValueError('PayPal plan is not active')
-    cycles = details.get('billing_cycles') or []
-    regular_cycles = [cycle for cycle in cycles if cycle.get('tenure_type') == 'REGULAR']
-    if not regular_cycles:
-        raise ValueError('PayPal plan has no regular billing cycle')
-    for cycle in regular_cycles:
-        frequency = cycle.get('frequency') or {}
-        pricing = cycle.get('pricing_scheme') or {}
-        fixed = pricing.get('fixed_price') or {}
-        if (frequency.get('interval_unit') != 'MONTH'
-                or int(frequency.get('interval_count', 0)) != 1
-                or (fixed.get('currency_code') or '').upper() != currency
-                or Decimal(str(fixed.get('value', '0'))) != expected_amount):
-            raise ValueError('PayPal plan currency, monthly interval, or amount does not match configured price')
-    return details
-
-def paypal_access_token():
-    if not paypal_credentials_configured():
-        raise RuntimeError('PayPal no está configurado: faltan PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET.')
-    raw = f"{os.environ['PAYPAL_CLIENT_ID']}:{os.environ['PAYPAL_CLIENT_SECRET']}".encode()
-    auth = base64.b64encode(raw).decode()
-    r = requests.post(paypal_base_url() + '/v1/oauth2/token', headers={
-        'Accept':'application/json','Accept-Language':'en_US','Authorization':f'Basic {auth}',
-        'Content-Type':'application/x-www-form-urlencoded'}, data={'grant_type':'client_credentials'}, timeout=15)
-    r.raise_for_status()
-    return r.json()['access_token']
-
-def paypal_get_subscription_details(subscription_id):
-    token = paypal_access_token()
-    response = requests.get(
-        paypal_base_url() + '/v1/billing/subscriptions/' + subscription_id,
-        headers={'Accept': 'application/json', 'Authorization': f'Bearer {token}'},
-        timeout=15,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def paypal_create_subscription(*, plan_id, custom_id, return_url, cancel_url):
-    token = paypal_access_token()
-    payload = {
-        'plan_id': plan_id,
-        'custom_id': custom_id,
-        'application_context': {
-            'brand_name': 'ManagerW.S',
-            'user_action': 'SUBSCRIBE_NOW',
-            'return_url': return_url,
-            'cancel_url': cancel_url,
-        },
-    }
-    r = requests.post(paypal_base_url() + '/v1/billing/subscriptions',
-                       headers={'Accept':'application/json','Content-Type':'application/json','Authorization':f'Bearer {token}',
-                                'PayPal-Request-Id': secrets.token_urlsafe(24)},
-                       json=payload, timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-def paypal_link(data, rel):
-    return next((x.get('href') for x in data.get('links',[]) if x.get('rel') == rel), None)
-
-
 @app.route('/planes')
 def pricing():
-    country = detect_country()
-    plan = PLANS_PPP.get(country, PLANS_PPP['GT'])
-    pp_currency = paypal_currency()
-    paypal_ready = {name: paypal_checkout_configured(name, pp_currency) for name in PAYPAL_PLAN_TIERS}
-    paypal_amounts = {name: paypal_price(name, pp_currency) for name in PAYPAL_PLAN_TIERS}
-    return render_template('pricing.html', plan=plan, country=country, pay=PAYMENT_CONFIG,
-                           paypal_ready=paypal_ready, paypal_amounts=paypal_amounts,
-                           paypal_currency=pp_currency, recurrente_links=RECURRENTE_CHECKOUT_URLS,
-                           logged='user_id' in session)
-
-
-@app.route('/billing/paypal/subscribe', methods=['POST'])
-@login_required
-@limiter.limit('10 per hour')
-def paypal_subscribe():
-    user = current_user()
-    membership = current_membership(user)
-    plan = (request.form.get('plan') or '').lower()
-    if plan not in ('pro','business','enterprise'):
-        abort(400)
-    country = detect_country()
-    currency = paypal_currency()
-    amount = paypal_price(plan, currency)
-    pp_plan_id = paypal_plan_id(plan, currency)
-    if not paypal_checkout_configured(plan, currency) or amount is None or not pp_plan_id:
-        flash('La suscripción PayPal todavía no está habilitada o no tiene una configuración completa.', 'warning')
-        return redirect(url_for('pricing'))
-
-    # Avoid accidental double subscriptions for organizations already billed by PayPal.
-    existing_active = (Subscription.query.filter_by(
-        organization_id=membership.organization_id, provider='paypal'
-    ).filter(Subscription.status.in_(['trialing', 'active', 'past_due', 'unpaid'])).first())
-    pending_recent = (Subscription.query.filter_by(
-        organization_id=membership.organization_id, provider='paypal', status='approval_pending'
-    ).filter(Subscription.created_at >= utcnow() - timedelta(minutes=15)).first())
-    if existing_active:
-        flash('Esta organización ya tiene una suscripción PayPal existente. Contacta al administrador para cambiar de plan.', 'warning')
-        return redirect(url_for('pricing'))
-    if pending_recent:
-        flash('Ya hay un checkout PayPal pendiente para esta organización. Espera unos minutos antes de volver a intentarlo.', 'warning')
-        return redirect(url_for('pricing'))
-
-    try:
-        paypal_validate_plan(pp_plan_id, currency, amount)
-        data = paypal_create_subscription(
-            plan_id=pp_plan_id, custom_id=f"org:{membership.organization_id}",
-            return_url=url_for('paypal_subscribe_return', _external=True),
-            cancel_url=url_for('pricing', _external=True))
-    except requests.RequestException:
-        logger.exception('PayPal subscription validation or creation failed')
-        flash('PayPal no respondió correctamente. No se inició una nueva suscripción; revisa la configuración e inténtalo otra vez.', 'danger')
-        return redirect(url_for('pricing'))
-    except (RuntimeError, ValueError, InvalidOperation):
-        logger.exception('PayPal plan configuration failed closed')
-        flash('El plan PayPal no coincide con el precio mensual configurado. No se inició el cobro.', 'danger')
-        return redirect(url_for('pricing'))
-    pp_id = data.get('id')
-    if not pp_id:
-        flash('PayPal no devolvió un identificador de suscripción.', 'danger')
-        return redirect(url_for('pricing'))
-    sub = Subscription(user_id=user.id, organization_id=membership.organization_id, provider='paypal',
-                       provider_plan_id=pp_plan_id, provider_subscription_id=pp_id, plan=plan,
-                       currency=currency, amount=amount, interval='month', status='approval_pending',
-                       metadata_json={'country':country, 'paypal_currency':currency, 'paypal_price':str(amount)})
-    db.session.add(sub)
-    db.session.flush()
-    db.session.add(SubscriptionEvent(organization_id=membership.organization_id, subscription_id=sub.id, provider='paypal',
-                                     event_type='CHECKOUT.SUBSCRIPTION.CREATED', provider_event_id=pp_id,
-                                     new_status='approval_pending', metadata_json={'plan':plan,'currency':currency}))
-    audit('PAYPAL_SUBSCRIPTION_STARTED', actor_user_id=user.id, organization_id=membership.organization_id,
-          target_type='subscription', target_id=pp_id, metadata={'plan':plan,'currency':currency})
-    db.session.commit()
-    approve_url = paypal_link(data, 'approve')
-    if not approve_url:
-        flash('PayPal creó la suscripción pero no devolvió el enlace de aprobación.', 'danger')
-        return redirect(url_for('pricing'))
-    return redirect(approve_url)
-
-
-def paypal_verify_webhook(payload):
-    webhook_id = os.environ.get('PAYPAL_WEBHOOK_ID')
-    if not webhook_id or not paypal_credentials_configured():
-        return False
-    required = {
-        'transmission_id': request.headers.get('PAYPAL-TRANSMISSION-ID'),
-        'transmission_time': request.headers.get('PAYPAL-TRANSMISSION-TIME'),
-        'cert_url': request.headers.get('PAYPAL-CERT-URL'),
-        'auth_algo': request.headers.get('PAYPAL-AUTH-ALGO'),
-        'transmission_sig': request.headers.get('PAYPAL-TRANSMISSION-SIG'),
-        'webhook_id': webhook_id,
-        'webhook_event': payload,
-    }
-    if not all(required[k] for k in required if k != 'webhook_event'):
-        return False
-    try:
-        token = paypal_access_token()
-        r = requests.post(paypal_base_url() + '/v1/notifications/verify-webhook-signature',
-                           headers={'Accept':'application/json','Content-Type':'application/json','Authorization':f'Bearer {token}'},
-                           json=required, timeout=15)
-        r.raise_for_status()
-        return r.json().get('verification_status') == 'SUCCESS'
-    except requests.RequestException:
-        logger.exception('PayPal webhook verification failed')
-        return False
-
-
-def _paypal_dt(value):
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace('Z','+00:00')).replace(tzinfo=None)
-    except (TypeError, ValueError):
-        return None
-
-
-def process_paypal_event(event, webhook_row):
-    event_type = event.get('event_type','')
-    resource = event.get('resource') or {}
-    event_id = event.get('id')
-    pp_sub_id = resource.get('id') if event_type.startswith('BILLING.SUBSCRIPTION.') else (resource.get('billing_agreement_id') or resource.get('subscription_id'))
-    sub = Subscription.query.filter_by(provider='paypal', provider_subscription_id=pp_sub_id).with_for_update().first() if pp_sub_id else None
-    if not sub:
-        webhook_row.status = 'ignored'
-        webhook_row.processed_at = utcnow()
-        db.session.commit()
-        return
-    previous = sub.status
-    billing_info = resource.get('billing_info') or {}
-    if event_type == 'BILLING.SUBSCRIPTION.ACTIVATED':
-        sub.status = 'active'
-        sub.current_period_start = _paypal_dt(resource.get('start_time')) or sub.current_period_start
-        sub.current_period_end = _paypal_dt(billing_info.get('next_billing_time')) or sub.current_period_end
-    elif event_type == 'BILLING.SUBSCRIPTION.UPDATED':
-        sub.current_period_end = _paypal_dt(billing_info.get('next_billing_time')) or sub.current_period_end
-        if resource.get('status') == 'ACTIVE': sub.status = 'active'
-    elif event_type == 'BILLING.SUBSCRIPTION.PAYMENT.FAILED':
-        sub.status = 'past_due'; sub.failed_payment_count = (sub.failed_payment_count or 0) + 1
-        sub.grace_period_end = utcnow() + timedelta(days=int(os.environ.get('BILLING_GRACE_DAYS','3')))
-    elif event_type == 'BILLING.SUBSCRIPTION.SUSPENDED':
-        sub.status = 'unpaid'
-    elif event_type == 'BILLING.SUBSCRIPTION.CANCELLED':
-        sub.status = 'canceled'; sub.canceled_at = utcnow(); sub.cancel_at_period_end = False
-    elif event_type == 'BILLING.SUBSCRIPTION.EXPIRED':
-        sub.status = 'expired'
-    elif event_type == 'PAYMENT.SALE.COMPLETED':
-        amount_obj = resource.get('amount') or {}
-        amount = Decimal(str(amount_obj.get('total','0')))
-        tx_id = resource.get('id')
-        existing = BillingTransaction.query.filter_by(provider='paypal', provider_transaction_id=tx_id).first() if tx_id else None
-        if not existing and tx_id:
-            tx = BillingTransaction(organization_id=sub.organization_id, subscription_id=sub.id, provider='paypal',
-                                    provider_transaction_id=tx_id, provider_event_id=event_id, transaction_type='subscription_charge',
-                                    status='completed', amount=amount, currency=amount_obj.get('currency','USD'),
-                                    occurred_at=_paypal_dt(event.get('create_time')) or utcnow(), metadata_json={'event_type':event_type})
-            db.session.add(tx)
-        # Sale webhooks often do not contain next_billing_time; refresh the authoritative
-        # subscription details so a successful renewal does not leave an expired period.
-        provider_subscription = paypal_get_subscription_details(sub.provider_subscription_id)
-        refreshed_billing = provider_subscription.get('billing_info') or {}
-        sub.current_period_end = _paypal_dt(refreshed_billing.get('next_billing_time')) or sub.current_period_end
-        if provider_subscription.get('status') == 'ACTIVE':
-            sub.status='active'
-        sub.failed_payment_count=0; sub.last_payment_at=utcnow(); sub.last_payment_provider_id=tx_id
-        sub.grace_period_end=None
-    elif event_type in ('PAYMENT.SALE.REFUNDED','PAYMENT.SALE.REVERSED'):
-        amount_obj = resource.get('amount') or {}
-        tx_id = resource.get('id')
-        if tx_id and not BillingTransaction.query.filter_by(provider='paypal', provider_transaction_id=tx_id).first():
-            db.session.add(BillingTransaction(organization_id=sub.organization_id, subscription_id=sub.id, provider='paypal',
-                provider_transaction_id=tx_id, provider_event_id=event_id, transaction_type='refund' if 'REFUNDED' in event_type else 'reversal',
-                status='refunded' if 'REFUNDED' in event_type else 'reversed', amount=Decimal(str(amount_obj.get('total','0'))),
-                currency=amount_obj.get('currency','USD'), occurred_at=utcnow(), metadata_json={'event_type':event_type}))
-        if event_type == 'PAYMENT.SALE.REVERSED':
-            # A reversed/charged-back subscription payment removes entitlement until reviewed.
-            sub.status = 'unpaid'
-            sub.grace_period_end = None
-    else:
-        webhook_row.status = 'ignored'
-    prior_subscription_event = SubscriptionEvent.query.filter_by(provider='paypal', provider_event_id=event_id).first()
-    if prior_subscription_event is None:
-        db.session.add(SubscriptionEvent(organization_id=sub.organization_id, subscription_id=sub.id, provider='paypal',
-            event_type=event_type, provider_event_id=event_id, previous_status=previous, new_status=sub.status,
-            metadata_json={'resource_id': resource.get('id')}))
-    webhook_row.status='processed'; webhook_row.processed_at=utcnow()
-    db.session.commit()
-
-
-@app.route('/webhooks/paypal', methods=['POST'])
-@csrf.exempt
-@limiter.exempt
-def paypal_webhook():
-    payload = request.get_json(silent=True) or {}
-    event_id = payload.get('id')
-    event_type = payload.get('event_type','')
-    if not event_id or not event_type:
-        return {'error':'invalid webhook'}, 400
-    if not paypal_verify_webhook(payload):
-        return {'error':'invalid signature'}, 400
-    existing = BillingWebhookEvent.query.filter_by(provider='paypal', provider_event_id=event_id).first()
-    if existing and existing.status in {'processed', 'ignored'}:
-        return {'status':'already_processed'}, 200
-    try:
-        if existing is None:
-            existing = BillingWebhookEvent(provider='paypal', provider_event_id=event_id, event_type=event_type,
-                resource_id=(payload.get('resource') or {}).get('id'), payload=payload)
-            db.session.add(existing)
-            db.session.flush()
-        process_paypal_event(payload, existing)
-        final_row = BillingWebhookEvent.query.filter_by(provider='paypal', provider_event_id=event_id).first()
-        return {'status': final_row.status if final_row else 'processed'}, 200
-    except IntegrityError:
-        db.session.rollback()
-        row = BillingWebhookEvent.query.filter_by(provider='paypal', provider_event_id=event_id).first()
-        if row and row.status in {'processed', 'ignored'}:
-            return {'status':'already_processed'}, 200
-        logger.exception('PayPal webhook idempotency conflict')
-        return {'error':'processing_failed'}, 500
-    except Exception as exc:
-        db.session.rollback()
-        row = BillingWebhookEvent.query.filter_by(provider='paypal', provider_event_id=event_id).first()
-        if row:
-            row.status='failed'; row.error_message=str(exc)[:1000]; db.session.commit()
-        logger.exception('PayPal webhook processing failed')
-        return {'error':'processing_failed'}, 500
-
+    plan = PLANS_PPP.get(detect_country(), PLANS_PPP['GT'])
+    return render_template(
+        'pricing.html',
+        plan=plan,
+        recurrente_links=RECURRENTE_CHECKOUT_URLS,
+        logged='user_id' in session,
+    )
 
 
 def verify_recurrente_signature(raw_body):
@@ -2519,43 +2207,13 @@ def recurrente_webhook():
         return {'error': 'processing_failed'}, 500
 
 
-@app.route('/billing/paypal/return')
-@login_required
-def paypal_subscribe_return():
-    flash('PayPal recibió tu solicitud. La activación definitiva se hará cuando llegue y se verifique el webhook de PayPal.', 'info')
-    return redirect(url_for('dashboard'))
-
-
 @app.route('/checkout', methods=['POST'])
 @login_required
 @limiter.limit('10 per hour')
 def checkout():
-    user = current_user()
-    membership = Membership.query.filter_by(user_id=user.id, is_active=True).first()
-    if not membership:
-        abort(403)
-    plan_data = PLANS_PPP.get(detect_country(), PLANS_PPP['GT'])
-    plan = request.form.get('plan')
-    method = request.form.get('method')
-    reference = (request.form.get('reference') or '').strip()[:100]
-    if plan not in ('pro', 'business', 'enterprise') or method not in ('wise', 'bank', 'recurrente'):
-        flash('Solicitud de pago no válida.', 'danger')
-        return redirect(url_for('pricing'))
-    if method == 'recurrente' and not reference:
-        flash('Ingresa el ID o referencia de tu pago Recurrente para que podamos verificarlo.', 'warning')
-        return redirect(url_for('pricing'))
-    pr = PaymentRequest(user_id=user.id, organization_id=membership.organization_id, plan=plan,
-                        method=method, amount=Decimal(str(plan_data[plan])), currency=plan_data['currency'],
-                        reference=reference or None)
-    db.session.add(pr)
-    audit('MANUAL_BILLING_REQUESTED', actor_user_id=user.id, organization_id=membership.organization_id,
-          target_type='payment_request', target_id='new', metadata={'plan': plan, 'method': method})
-    db.session.commit()
-    if method == 'recurrente':
-        flash('Referencia Recurrente recibida. La membresía se activará después de verificar el pago en el panel del proveedor.', 'success')
-    else:
-        flash('Solicitud enviada. El administrador verificará el pago antes de activar la membresía.', 'success')
+    flash('Los planes se contratan exclusivamente por Recurrente. La activación se realiza al confirmar el pago mediante webhook.', 'info')
     return redirect(url_for('pricing'))
+
 
 # ---------------------------------------------------------------------------
 # Admin — every state-changing action is POST + CSRF
