@@ -71,21 +71,22 @@ class Phase6AppStaticTests(unittest.TestCase):
     def test_financial_float_is_absent(self):
         self.assertNotRegex(SOURCE, r'db\.Float')
 
-    def test_paypal_checkout_is_disabled_until_explicitly_enabled(self):
-        self.assertIn("os.environ.get('PAYPAL_ENABLED', 'false')", SOURCE)
-        self.assertIn("if not paypal_checkout_configured(plan, currency)", SOURCE)
+    def test_paypal_new_checkout_is_removed_but_legacy_webhook_is_preserved(self):
+        body = function_body('paypal_subscribe')
+        self.assertIn('ManagerWS ya no ofrece suscripciones por PayPal', body)
+        self.assertNotIn('paypal_create_subscription(', body)
+        self.assertIn("@app.route('/webhooks/paypal', methods=['POST'])", SOURCE)
 
     def test_paypal_currency_and_amount_are_separate_from_localized_display_prices(self):
         body = function_body('paypal_subscribe')
         self.assertIn('currency = paypal_currency()', body)
         self.assertIn('amount = paypal_price(plan, currency)', body)
         self.assertNotIn('amount = Decimal(str(plan_data[plan]))', body)
-        self.assertIn('paypal_amounts=paypal_amounts', SOURCE)
-        self.assertIn('Precio de la suscripción PayPal', Path(__file__).resolve().parents[1].joinpath('templates/pricing.html').read_text(encoding='utf-8'))
+        pricing = Path(__file__).resolve().parents[1].joinpath('templates/pricing.html').read_text(encoding='utf-8')
+        self.assertNotIn('PayPal', pricing)
+        self.assertIn('Suscribirme con Recurrente', pricing)
 
-    def test_paypal_plan_is_checked_server_side_before_creating_subscription(self):
-        body = function_body('paypal_subscribe')
-        self.assertIn('paypal_validate_plan(pp_plan_id, currency, amount)', body)
+    def test_legacy_paypal_plan_validator_remains_available_for_historical_billing(self):
         validation = function_body('paypal_validate_plan')
         self.assertIn("details.get('status') != 'ACTIVE'", validation)
         self.assertIn("frequency.get('interval_unit') != 'MONTH'", validation)
@@ -116,20 +117,30 @@ class Phase6AppStaticTests(unittest.TestCase):
         self.assertIn("sub.status = 'unpaid'", process)
 
 
-    def test_recurrente_checkout_links_and_manual_activation_are_wired(self):
+    def test_recurrente_is_the_only_plan_checkout(self):
         self.assertIn("RECURRENTE_CHECKOUT_URLS", SOURCE)
         self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-pro", SOURCE)
         self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-bussines", SOURCE)
         self.assertIn("https://app.recurrente.com/s/willy-salan/managerws-enterprise", SOURCE)
         checkout = function_body('checkout')
-        self.assertIn("('wise', 'bank', 'recurrente')", checkout)
-        self.assertIn("if method == 'recurrente' and not reference:", checkout)
-        approval = function_body('approve_payment')
-        self.assertIn("current.provider = 'recurrente' if pr.method == 'recurrente' else 'manual'", approval)
+        self.assertIn("exclusivamente por Recurrente", checkout)
+        self.assertNotIn("PaymentRequest(", checkout)
         pricing = Path(__file__).resolve().parents[1].joinpath('templates/pricing.html').read_text(encoding='utf-8')
         self.assertIn("{{ recurrente_links[name] }}", pricing)
         self.assertIn("Beneficios incluidos", pricing)
-        self.assertIn("Suscribirme con PayPal", pricing)
+        self.assertIn("mismo correo verificado", pricing)
+        self.assertNotIn("PayPal", pricing)
+        self.assertNotIn("url_for('checkout')", pricing)
+
+    def test_neon_pooler_does_not_receive_unsupported_search_path_startup_parameter(self):
+        self.assertNotIn("'connect_args': {'options': '-csearch_path=managerws,public'}", SOURCE)
+        self.assertNotIn("options': '-csearch_path", SOURCE)
+
+    def test_registration_requires_a_complete_email_provider_before_persisting(self):
+        body = function_body('register')
+        self.assertIn('if not email_provider_configured():', body)
+        self.assertIn('if not sent:', body)
+        self.assertIn('db.session.rollback()', body)
 
 
 if __name__ == '__main__':
