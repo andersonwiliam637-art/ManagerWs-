@@ -319,7 +319,7 @@ class Subscription(db.Model):
     organization_id = db.Column(db.Integer, db.ForeignKey('organization.id'), nullable=False, index=True)
     provider = db.Column(db.String(30), nullable=False, default='manual')
     provider_customer_id = db.Column(db.String(180), index=True)
-    Legacy provider-plan reference retained for compatibility with existing subscription rows.
+    # Legacy provider-plan reference retained for compatibility with existing subscription rows.
     provider_plan_id = db.Column(db.String(180))
     provider_subscription_id = db.Column(db.String(180), unique=True, index=True)
     plan = db.Column(db.String(50), nullable=False, default='Gratis')
