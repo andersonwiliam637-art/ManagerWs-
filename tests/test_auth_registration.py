@@ -24,6 +24,7 @@ class TestAuthRegistration:
             managerws.db.session.remove()
             managerws.db.drop_all()
             managerws.db.create_all()
+        managerws.limiter.enabled = False
         self.client = managerws.app.test_client()
 
     def register(self, username="empresa_demo", email="demo@example.com"):
