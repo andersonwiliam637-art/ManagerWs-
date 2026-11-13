@@ -1792,6 +1792,346 @@ def pricing():
     )
 
 
+def verify_recurrente_signature(raw_body):
+    """Verify Svix signatures over the exact unmodified request body."""
+    secret = (os.environ.get('RECURRENTE_WEBHOOK_SECRET') or '').strip()
+    if not secret.startswith('whsec_'):
+        logger.error('RECURRENTE_WEBHOOK_SECRET is missing or malformed.')
+        return False
+
+    message_id = request.headers.get('svix-id', '').strip()
+    timestamp = request.headers.get('svix-timestamp', '').strip()
+    signature_header = request.headers.get('svix-signature', '').strip()
+    if not message_id or not timestamp or not signature_header:
+        return False
+
+    try:
+        timestamp_int = int(timestamp)
+        if abs(datetime.utcnow().timestamp() - timestamp_int) > 300:
+            return False
+        secret_bytes = base64.b64decode(secret.split('_', 1)[1], validate=True)
+    except (ValueError, TypeError):
+        return False
+
+    signed_content = message_id.encode('utf-8') + b'.' + timestamp.encode('ascii') + b'.' + raw_body
+    expected = base64.b64encode(hmac.new(secret_bytes, signed_content, hashlib.sha256).digest()).decode('ascii')
+    for candidate in signature_header.split():
+        if candidate.startswith('v1,') and hmac.compare_digest(candidate[3:], expected):
+            return True
+    return False
+
+
+def recurrente_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00')).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return None
+
+
+def recurrente_add_month(value):
+    month = value.month + 1
+    year = value.year
+    if month == 13:
+        month = 1
+        year += 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def recurrente_plan_from_payment(payload):
+    """Map only exact configured GTQ monthly amounts; never infer from a product name."""
+    raw_amount = payload.get('amount_in_cents')
+    currency = (payload.get('currency') or '').upper()
+    product_id = ((payload.get('product') or {}).get('id') or '').strip()
+    if raw_amount is None or currency != PLANS_PPP['GT']['currency']:
+        return None
+
+    try:
+        amount = (Decimal(str(raw_amount)) / Decimal('100')).quantize(Decimal('0.01'))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+    matches = []
+    for plan_name in ('pro', 'business', 'enterprise'):
+        expected = Decimal(str(PLANS_PPP['GT'][plan_name])).quantize(Decimal('0.01'))
+        configured_product_id = (os.environ.get(f'RECURRENTE_PRODUCT_{plan_name.upper()}_ID') or '').strip()
+        if amount == expected and (not configured_product_id or configured_product_id == product_id):
+            matches.append(plan_name)
+    return matches[0] if len(matches) == 1 else None
+
+
+def recurrente_customer_email(payload):
+    customer = payload.get('customer') or {}
+    return (customer.get('email') or payload.get('customer_email') or '').strip().lower()
+
+
+def recurrente_add_subscription_event(subscription, event_type, event_id, payload, previous_status):
+    exists = SubscriptionEvent.query.filter_by(
+        provider='recurrente', provider_event_id=event_id
+    ).first()
+    if exists is None:
+        db.session.add(SubscriptionEvent(
+            organization_id=subscription.organization_id,
+            subscription_id=subscription.id,
+            provider='recurrente',
+            event_type=event_type,
+            provider_event_id=event_id,
+            previous_status=previous_status,
+            new_status=subscription.status,
+            occurred_at=recurrente_datetime(payload.get('created_at')) or utcnow(),
+            metadata_json={
+                'resource_id': payload.get('id'),
+                'product_id': ((payload.get('product') or {}).get('id')),
+            },
+        ))
+
+
+def process_recurrente_event(payload, webhook_row):
+    """Apply a verified Recurrente event. Only a successful recurring charge grants access."""
+    event_type = (payload.get('event_type') or '').strip()
+    event_id = webhook_row.provider_event_id
+    resource_id = payload.get('id')
+    occurred_at = recurrente_datetime(payload.get('created_at')) or utcnow()
+
+    if event_type == 'intent.succeeded':
+        subscription_data = payload.get('subscription') or {}
+        recurrente_subscription_id = (subscription_data.get('id') or payload.get('subscription_id') or '').strip()
+        if not recurrente_subscription_id or payload.get('status') != 'succeeded':
+            webhook_row.status = 'ignored'
+            webhook_row.processed_at = utcnow()
+            webhook_row.error_message = 'Successful recurring payment and subscription ID are required.'
+            return
+
+        plan_name = recurrente_plan_from_payment(payload)
+        if not plan_name:
+            webhook_row.status = 'ignored'
+            webhook_row.processed_at = utcnow()
+            webhook_row.error_message = 'Payment amount, currency, or configured product ID did not match a plan.'
+            logger.warning('Recurrente payment %s did not match a configured ManagerWS plan.', resource_id)
+            return
+
+        currency = (payload.get('currency') or '').upper()
+        amount = (Decimal(str(payload.get('amount_in_cents'))) / Decimal('100')).quantize(Decimal('0.01'))
+        customer_email = recurrente_customer_email(payload)
+        customer_id = (payload.get('customer_id') or (payload.get('customer') or {}).get('id') or '').strip()
+        product_id = ((payload.get('product') or {}).get('id') or '').strip()
+        payment_id = ((payload.get('payment') or {}).get('id') or resource_id or '').strip()
+
+        subscription = Subscription.query.filter_by(
+            provider='recurrente',
+            provider_subscription_id=recurrente_subscription_id,
+        ).with_for_update().first()
+
+        if subscription is not None:
+            owner = db.session.get(User, subscription.user_id)
+            if not owner or not owner.is_active or (
+                customer_email and owner.email.strip().lower() != customer_email
+            ):
+                webhook_row.status = 'ignored'
+                webhook_row.processed_at = utcnow()
+                webhook_row.error_message = 'Payment identity did not match the linked ManagerWS account.'
+                return
+            if subscription.organization_id is None:
+                webhook_row.status = 'ignored'
+                webhook_row.processed_at = utcnow()
+                webhook_row.error_message = 'Subscription has no organization.'
+                return
+        else:
+            if not customer_email:
+                webhook_row.status = 'ignored'
+                webhook_row.processed_at = utcnow()
+                webhook_row.error_message = 'A customer email is required to link this payment to a ManagerWS account.'
+                return
+            owner = User.query.filter(
+                func.lower(User.email) == customer_email,
+                User.is_active.is_(True),
+                User.email_verified.is_(True),
+            ).first()
+            if not owner:
+                webhook_row.status = 'ignored'
+                webhook_row.processed_at = utcnow()
+                webhook_row.error_message = 'No active, verified ManagerWS account matched the Recurrente customer email.'
+                return
+            memberships = (Membership.query.join(Organization, Organization.id == Membership.organization_id)
+                           .filter(Membership.user_id == owner.id,
+                                   Membership.is_active.is_(True),
+                                   Organization.is_active.is_(True)).all())
+            if len(memberships) != 1:
+                webhook_row.status = 'ignored'
+                webhook_row.processed_at = utcnow()
+                webhook_row.error_message = 'The customer must have exactly one active ManagerWS organization membership.'
+                return
+            membership = memberships[0]
+            current = (Subscription.query.filter_by(organization_id=membership.organization_id)
+                       .order_by(Subscription.created_at.desc()).first())
+            if current and current.is_current:
+                webhook_row.status = 'ignored'
+                webhook_row.processed_at = utcnow()
+                webhook_row.error_message = 'An active subscription already exists for this organization; automatic provider switching is blocked.'
+                return
+            subscription = current or Subscription(
+                user_id=owner.id,
+                organization_id=membership.organization_id,
+            )
+            if current is None:
+                db.session.add(subscription)
+                db.session.flush()
+
+        # The provider transaction ID, not only the webhook delivery ID, protects
+        # against duplicate charge events delivered under different message IDs.
+        duplicate_transaction = (BillingTransaction.query
+                                 .filter_by(provider='recurrente',
+                                            provider_transaction_id=payment_id).first()) if payment_id else None
+        if duplicate_transaction:
+            webhook_row.status = 'ignored'
+            webhook_row.processed_at = utcnow()
+            webhook_row.error_message = 'This Recurrente payment was already recorded.'
+            return
+
+        previous_status = subscription.status
+        subscription.provider = 'recurrente'
+        subscription.provider_customer_id = customer_id or subscription.provider_customer_id
+        subscription.provider_plan_id = product_id or subscription.provider_plan_id
+        subscription.provider_subscription_id = recurrente_subscription_id
+        subscription.plan = plan_name
+        subscription.currency = currency
+        subscription.amount = amount
+        subscription.interval = 'month'
+        subscription.status = 'active'
+        subscription.cancel_at_period_end = False
+        subscription.canceled_at = None
+        subscription.last_payment_at = occurred_at
+        subscription.last_payment_provider_id = payment_id or None
+        subscription.failed_payment_count = 0
+        subscription.grace_period_end = None
+        subscription.current_period_start = occurred_at
+        calculated_period_end = recurrente_add_month(occurred_at)
+        if subscription.current_period_end is None or calculated_period_end > subscription.current_period_end:
+            subscription.current_period_end = calculated_period_end
+        subscription.metadata_json = {
+            **(subscription.metadata_json or {}),
+            'recurrente_customer_id': customer_id or None,
+            'recurrente_product_id': product_id or None,
+            'recurrente_last_event_id': event_id,
+        }
+
+        db.session.add(BillingTransaction(
+            organization_id=subscription.organization_id,
+            subscription_id=subscription.id,
+            provider='recurrente',
+            provider_transaction_id=payment_id or None,
+            provider_event_id=event_id,
+            transaction_type='subscription_charge',
+            status='completed',
+            amount=amount,
+            currency=currency,
+            occurred_at=occurred_at,
+            metadata_json={'event_type': event_type, 'recurrente_subscription_id': recurrente_subscription_id},
+        ))
+        recurrente_add_subscription_event(subscription, event_type, event_id, payload, previous_status)
+        webhook_row.status = 'processed'
+        webhook_row.processed_at = utcnow()
+        webhook_row.error_message = None
+        audit('RECURRENTE_SUBSCRIPTION_PAYMENT_CONFIRMED',
+              actor_user_id=subscription.user_id,
+              organization_id=subscription.organization_id,
+              target_type='subscription',
+              target_id=subscription.id,
+              metadata={'plan': plan_name, 'amount': str(amount), 'currency': currency})
+        return
+
+    if event_type in {
+        'subscription.create', 'subscription.past_due', 'subscription.pause',
+        'subscription.unpause', 'subscription.reactivate', 'subscription.update',
+        'subscription.cancel', 'subscription.item_added', 'subscription.item_removed',
+        'subscription.invoice_item_added',
+    }:
+        recurrente_subscription_id = (resource_id or '').strip()
+        subscription = Subscription.query.filter_by(
+            provider='recurrente',
+            provider_subscription_id=recurrente_subscription_id,
+        ).with_for_update().first() if recurrente_subscription_id else None
+        if subscription is None:
+            # subscription.create can arrive before intent.succeeded. It cannot
+            # activate access on its own because it carries no verified charge amount.
+            webhook_row.status = 'ignored'
+            webhook_row.processed_at = utcnow()
+            webhook_row.error_message = 'Subscription event arrived before a verified recurring payment was linked.'
+            return
+
+        previous_status = subscription.status
+        if event_type == 'subscription.past_due':
+            subscription.status = 'past_due'
+            subscription.failed_payment_count = (subscription.failed_payment_count or 0) + 1
+            subscription.grace_period_end = utcnow() + timedelta(
+                days=int(os.environ.get('BILLING_GRACE_DAYS', '3'))
+            )
+        elif event_type == 'subscription.pause':
+            subscription.status = 'paused'
+            subscription.grace_period_end = None
+        elif event_type == 'subscription.cancel':
+            subscription.status = 'canceled'
+            subscription.canceled_at = occurred_at
+            subscription.cancel_at_period_end = False
+            subscription.grace_period_end = None
+        elif event_type in {'subscription.unpause', 'subscription.reactivate'}:
+            if subscription.current_period_end and subscription.current_period_end > utcnow():
+                subscription.status = 'active'
+            else:
+                # Resuming a subscription does not itself prove that a new charge succeeded.
+                subscription.status = 'approval_pending'
+            subscription.grace_period_end = None
+        # subscription.create/update/item changes are recorded without granting
+        # or extending access. Only intent.succeeded advances the paid period.
+        subscription.metadata_json = {
+            **(subscription.metadata_json or {}),
+            'recurrente_last_event_id': event_id,
+            'recurrente_last_event_type': event_type,
+        }
+        recurrente_add_subscription_event(subscription, event_type, event_id, payload, previous_status)
+        webhook_row.status = 'processed'
+        webhook_row.processed_at = utcnow()
+        webhook_row.error_message = None
+        audit('RECURRENTE_SUBSCRIPTION_EVENT',
+              actor_user_id=subscription.user_id,
+              organization_id=subscription.organization_id,
+              target_type='subscription',
+              target_id=subscription.id,
+              metadata={'event_type': event_type, 'previous_status': previous_status,
+                        'new_status': subscription.status})
+        return
+
+    if event_type == 'intent.failed':
+        subscription_data = payload.get('subscription') or {}
+        recurrente_subscription_id = (subscription_data.get('id') or payload.get('subscription_id') or '').strip()
+        subscription = Subscription.query.filter_by(
+            provider='recurrente',
+            provider_subscription_id=recurrente_subscription_id,
+        ).with_for_update().first() if recurrente_subscription_id else None
+        if subscription:
+            previous_status = subscription.status
+            subscription.status = 'past_due'
+            subscription.failed_payment_count = (subscription.failed_payment_count or 0) + 1
+            subscription.grace_period_end = utcnow() + timedelta(
+                days=int(os.environ.get('BILLING_GRACE_DAYS', '3'))
+            )
+            recurrente_add_subscription_event(subscription, event_type, event_id, payload, previous_status)
+            audit('RECURRENTE_SUBSCRIPTION_PAYMENT_FAILED',
+                  actor_user_id=subscription.user_id,
+                  organization_id=subscription.organization_id,
+                  target_type='subscription',
+                  target_id=subscription.id)
+        webhook_row.status = 'processed' if subscription else 'ignored'
+        webhook_row.processed_at = utcnow()
+        return
+
+    webhook_row.status = 'ignored'
+    webhook_row.processed_at = utcnow()
+    webhook_row.error_message = 'Event type is not used by ManagerWS billing.'
+
+
 @app.route('/webhooks/recurrente', methods=['POST'])
 @csrf.exempt
 @limiter.exempt
