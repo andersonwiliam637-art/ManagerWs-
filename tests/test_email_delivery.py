@@ -41,7 +41,7 @@ class TestEmailDelivery:
     def clear_email_env(self, monkeypatch):
         for key in (
             "RESEND_API_KEY", "EMAIL_FROM", "SMTP_HOST", "SMTP_FROM",
-            "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD",
+            "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_PROVIDER",
         ):
             monkeypatch.delenv(key, raising=False)
 
@@ -89,6 +89,47 @@ class TestEmailDelivery:
 
         assert managerws.send_email("customer@example.com", "Verify", "Verification URL") is True
         assert FakeSMTP.instances == []
+
+    
+    def test_explicit_smtp_provider_sends_to_external_customer_address(self, monkeypatch):
+        self.clear_email_env(monkeypatch)
+        monkeypatch.setenv("EMAIL_PROVIDER", "smtp")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        monkeypatch.setenv("EMAIL_FROM", "ManagerWS <onboarding@resend.dev>")
+        monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+        monkeypatch.setenv("SMTP_PORT", "587")
+        monkeypatch.setenv("SMTP_USERNAME", "sender@gmail.com")
+        monkeypatch.setenv("SMTP_PASSWORD", "app-password")
+        monkeypatch.setenv("SMTP_FROM", "ManagerWS <sender@gmail.com>")
+
+        def forbidden_resend(*args, **kwargs):
+            raise AssertionError("Resend must not be used when EMAIL_PROVIDER=smtp")
+
+        monkeypatch.setattr(managerws.requests, "post", forbidden_resend)
+        monkeypatch.setattr(managerws.smtplib, "SMTP", FakeSMTP)
+
+        assert managerws.email_provider_configured() is True
+        assert managerws.send_email("customer@outlook.com", "Verify", "Link") is True
+        assert len(FakeSMTP.instances) == 1
+        message = FakeSMTP.instances[0].messages[0]
+        assert message["To"] == "customer@outlook.com"
+        assert message["From"] == "ManagerWS <sender@gmail.com>"
+
+    def test_explicit_smtp_provider_does_not_silently_use_resend(self, monkeypatch):
+        self.clear_email_env(monkeypatch)
+        monkeypatch.setenv("EMAIL_PROVIDER", "smtp")
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        monkeypatch.setenv("EMAIL_FROM", "ManagerWS <onboarding@resend.dev>")
+        assert managerws.email_provider_configured() is False
+        assert managerws.send_email("customer@outlook.com", "Verify", "Link") is False
+
+    def test_invalid_email_provider_is_rejected(self, monkeypatch):
+        self.clear_email_env(monkeypatch)
+        monkeypatch.setenv("EMAIL_PROVIDER", "invalid")
+        monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+        monkeypatch.setenv("SMTP_FROM", "ManagerWS <sender@gmail.com>")
+        assert managerws.email_provider_configured() is False
+        assert managerws.send_email("customer@outlook.com", "Verify", "Link") is False
 
     def test_smtp_ssl_465_is_supported(self, monkeypatch):
         self.clear_email_env(monkeypatch)
