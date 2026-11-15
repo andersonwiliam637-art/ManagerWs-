@@ -26,6 +26,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy import Numeric, CheckConstraint, UniqueConstraint, Index, or_, func, text
 from sqlalchemy.exc import IntegrityError
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from redis_config import normalize_redis_storage_uri
 
 # ---------------------------------------------------------------------------
 # App configuration
@@ -55,8 +56,6 @@ app.config.update(
 )
 
 csrf = CSRFProtect(app)
-from redis_config import normalize_redis_storage_uri
-
 storage_uri = normalize_redis_storage_uri(
     os.environ.get('REDIS_URL'),
     is_production=IS_PRODUCTION,
