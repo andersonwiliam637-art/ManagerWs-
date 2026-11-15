@@ -1187,20 +1187,42 @@ def forgot_password():
         user = User.query.filter_by(email=email).first()
         # Constant response avoids account enumeration.
         if user and user.is_active:
-            # Revoke older outstanding reset links before issuing a new one.
-            PasswordResetToken.query.filter_by(user_id=user.id, used_at=None).update({'used_at': utcnow()}, synchronize_session=False)
-            raw = secrets.token_urlsafe(48)
-            db.session.add(PasswordResetToken(
-                user_id=user.id,
-                token_hash=generate_password_hash(raw, method='pbkdf2:sha256:600000'),
-                expires_at=utcnow() + timedelta(minutes=30),
-            ))
-            db.session.commit()
-            token = make_token({'uid': user.id, 'secret': raw}, 'password-reset')
-            reset_url = urljoin(os.environ.get('PUBLIC_BASE_URL', request.host_url), url_for('reset_password', token=token))
-            sent = send_email(user.email, 'Restablecer contraseña de ManagerW.S', f'Restablece tu contraseña aquí:\n\n{reset_url}\n\nEl enlace vence en 30 minutos.')
-            if not sent and not IS_PRODUCTION:
-                logger.info('DEV password reset URL: %s', reset_url)
+            try:
+                # Keep existing valid links until the replacement email is accepted.
+                raw = secrets.token_urlsafe(48)
+                reset_row = PasswordResetToken(
+                    user_id=user.id,
+                    token_hash=generate_password_hash(raw, method='pbkdf2:sha256:600000'),
+                    expires_at=utcnow() + timedelta(minutes=30),
+                )
+                db.session.add(reset_row)
+                db.session.flush()
+                token = make_token({'uid': user.id, 'secret': raw}, 'password-reset')
+                reset_url = urljoin(
+                    (os.environ.get('PUBLIC_BASE_URL') or request.host_url).rstrip('/') + '/',
+                    url_for('reset_password', token=token),
+                )
+                sent = send_email(
+                    user.email,
+                    'Restablecer contraseña de ManagerW.S',
+                    f'Restablece tu contraseña aquí:\n\n{reset_url}\n\nEl enlace vence en 30 minutos.',
+                )
+                if sent:
+                    PasswordResetToken.query.filter(
+                        PasswordResetToken.user_id == user.id,
+                        PasswordResetToken.used_at.is_(None),
+                        PasswordResetToken.id != reset_row.id,
+                    ).update({'used_at': utcnow()}, synchronize_session=False)
+                    db.session.commit()
+                else:
+                    db.session.rollback()
+                    logger.warning(
+                        'No se pudo enviar el correo de restablecimiento; se conservó el enlace anterior.'
+                    )
+            except Exception:
+                db.session.rollback()
+                logger.exception('Error al preparar el correo de restablecimiento de contraseña.')
+
         flash('Si el correo existe, recibirás instrucciones para restablecer la contraseña.', 'success')
         return redirect(url_for('login'))
     return render_template('login.html', reset_mode=True)
