@@ -188,52 +188,40 @@ def audit(action, *, actor_user_id=None, organization_id=None, target_type=None,
     db.session.add(entry)
 
 
-def email_provider_configured():
-    """Return whether at least one complete outbound email provider is configured."""
-    resend_ready = bool(
-        (os.environ.get('RESEND_API_KEY') or '').strip()
-        and (os.environ.get('EMAIL_FROM') or '').strip()
-    )
-    smtp_ready = bool(
+def _smtp_email_ready():
+    return bool(
         (os.environ.get('SMTP_HOST') or '').strip()
         and ((os.environ.get('SMTP_FROM') or os.environ.get('EMAIL_FROM') or '').strip())
     )
-    return resend_ready or smtp_ready
 
 
-def send_email(to, subject, body):
-    """Send through Resend first, then fall back to SMTP when available."""
-    resend_api_key = (os.environ.get('RESEND_API_KEY') or '').strip()
-    email_from = (os.environ.get('EMAIL_FROM') or '').strip()
+def _resend_email_ready():
+    return bool(
+        (os.environ.get('RESEND_API_KEY') or '').strip()
+        and (os.environ.get('EMAIL_FROM') or '').strip()
+    )
 
-    if resend_api_key and email_from:
-        try:
-            response = requests.post(
-                'https://api.resend.com/emails',
-                headers={
-                    'Authorization': f'Bearer {resend_api_key}',
-                    'Content-Type': 'application/json',
-                },
-                json={
-                    'from': email_from,
-                    'to': [to],
-                    'subject': subject,
-                    'text': body,
-                },
-                timeout=15,
-            )
-            if response.status_code in (200, 201):
-                return True
-            logger.error('Resend rechazó el correo (HTTP %s); se intentará el proveedor SMTP alternativo.', response.status_code)
-        except requests.RequestException as exc:
-            logger.error('Resend no respondió (%s); se intentará el proveedor SMTP alternativo.', type(exc).__name__)
-    elif resend_api_key and not email_from:
-        logger.error('RESEND_API_KEY existe, pero EMAIL_FROM está vacío; se intentará SMTP si está configurado.')
 
+def email_provider_configured():
+    """Return whether the explicitly selected outbound email provider is ready."""
+    provider = (os.environ.get('EMAIL_PROVIDER') or 'auto').strip().lower()
+    smtp_ready = _smtp_email_ready()
+    resend_ready = _resend_email_ready()
+
+    if provider == 'smtp':
+        return smtp_ready
+    if provider == 'resend':
+        return resend_ready
+    if provider == 'auto':
+        return smtp_ready or resend_ready
+    return False
+
+
+def _send_via_smtp(to, subject, body):
     host = (os.environ.get('SMTP_HOST') or '').strip()
-    sender = (os.environ.get('SMTP_FROM') or email_from).strip()
+    sender = (os.environ.get('SMTP_FROM') or os.environ.get('EMAIL_FROM') or '').strip()
     if not host or not sender:
-        logger.error('No hay un proveedor de correo completo: configura RESEND_API_KEY + EMAIL_FROM o SMTP_HOST + SMTP_FROM.')
+        logger.error('SMTP seleccionado, pero faltan SMTP_HOST o SMTP_FROM.')
         return False
 
     msg = EmailMessage()
@@ -258,10 +246,64 @@ def send_email(to, subject, body):
                 if username:
                     smtp.login(username, password)
                 smtp.send_message(msg)
+        logger.info('Correo transaccional aceptado por SMTP.')
         return True
     except (OSError, smtplib.SMTPException, ValueError) as exc:
         logger.error('No se pudo enviar el correo mediante SMTP (%s).', type(exc).__name__)
         return False
+
+
+def _send_via_resend(to, subject, body):
+    api_key = (os.environ.get('RESEND_API_KEY') or '').strip()
+    email_from = (os.environ.get('EMAIL_FROM') or '').strip()
+    if not api_key or not email_from:
+        logger.error('Resend seleccionado, pero faltan RESEND_API_KEY o EMAIL_FROM.')
+        return False
+
+    try:
+        response = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'from': email_from,
+                'to': [to],
+                'subject': subject,
+                'text': body,
+            },
+            timeout=15,
+        )
+        if response.status_code in (200, 201):
+            logger.info('Correo transaccional aceptado por Resend.')
+            return True
+        logger.error('Resend rechazó el correo (HTTP %s).', response.status_code)
+        return False
+    except requests.RequestException as exc:
+        logger.error('Resend no respondió (%s).', type(exc).__name__)
+        return False
+
+
+def send_email(to, subject, body):
+    """Send transactional email using an explicit provider or auto fallback."""
+    provider = (os.environ.get('EMAIL_PROVIDER') or 'auto').strip().lower()
+
+    if provider == 'smtp':
+        return _send_via_smtp(to, subject, body)
+    if provider == 'resend':
+        return _send_via_resend(to, subject, body)
+    if provider != 'auto':
+        logger.error('EMAIL_PROVIDER no es válido; usa smtp, resend o auto.')
+        return False
+
+    # Auto mode keeps the existing Resend-first behavior and uses SMTP as fallback.
+    if _resend_email_ready() and _send_via_resend(to, subject, body):
+        return True
+    if _smtp_email_ready():
+        return _send_via_smtp(to, subject, body)
+    logger.error('No hay un proveedor de correo completo: configura Resend o SMTP.')
+    return False
 
 
 # ---------------------------------------------------------------------------
