@@ -55,7 +55,12 @@ app.config.update(
 )
 
 csrf = CSRFProtect(app)
-storage_uri = os.environ.get('REDIS_URL', 'memory://')
+from redis_config import normalize_redis_storage_uri
+
+storage_uri = normalize_redis_storage_uri(
+    os.environ.get('REDIS_URL'),
+    is_production=IS_PRODUCTION,
+)
 limiter = Limiter(
     get_remote_address,
     app=app,
