@@ -161,3 +161,82 @@ class TestAuthRegistration:
             assert tokens[0].used_at is not None
             assert tokens[1].used_at is None
             assert tokens[1].expires_at > managerws.utcnow()
+
+    def create_active_user(self, email="reset@example.com"):
+        user = managerws.User(
+            username="reset_user",
+            email=email,
+            password=managerws.generate_password_hash(
+                "CorrectHorseBattery!27", method="pbkdf2:sha256:600000"
+            ),
+            role="owner",
+            is_active=True,
+            email_verified=True,
+        )
+        with managerws.app.app_context():
+            managerws.db.session.add(user)
+            managerws.db.session.commit()
+            return user.id
+
+    def test_password_reset_sends_link_and_updates_password(self):
+        self.create_active_user()
+        with patch.object(managerws, "send_email", return_value=True) as send_email:
+            response = self.client.post(
+                "/forgot-password",
+                data={"email": "reset@example.com"},
+            )
+
+        assert response.status_code == 302
+        assert send_email.call_count == 1
+        reset_body = send_email.call_args.args[2]
+        reset_url = reset_body.splitlines()[2]
+        reset_path = urlparse(reset_url).path
+        assert self.client.get(reset_path).status_code == 200
+        updated = self.client.post(
+            reset_path,
+            data={"password": "NewCorrectHorseBattery!38"},
+        )
+        assert updated.status_code == 302
+
+        with managerws.app.app_context():
+            user = managerws.User.query.filter_by(email="reset@example.com").one()
+            assert managerws.check_password_hash(
+                user.password, "NewCorrectHorseBattery!38"
+            )
+            token_rows = managerws.PasswordResetToken.query.filter_by(
+                user_id=user.id
+            ).all()
+            assert len(token_rows) == 1
+            assert token_rows[0].used_at is not None
+
+    def test_failed_password_reset_email_keeps_previous_token_valid(self):
+        user_id = self.create_active_user()
+        old_secret = "existing-valid-reset-secret"
+        with managerws.app.app_context():
+            managerws.db.session.add(managerws.PasswordResetToken(
+                user_id=user_id,
+                token_hash=managerws.generate_password_hash(
+                    old_secret, method="pbkdf2:sha256:600000"
+                ),
+                expires_at=managerws.utcnow() + managerws.timedelta(minutes=20),
+            ))
+            managerws.db.session.commit()
+
+        with patch.object(managerws, "send_email", return_value=False):
+            response = self.client.post(
+                "/forgot-password",
+                data={"email": "reset@example.com"},
+            )
+
+        assert response.status_code == 302
+        with managerws.app.app_context():
+            tokens = managerws.PasswordResetToken.query.filter_by(
+                user_id=user_id
+            ).all()
+            assert len(tokens) == 1
+            assert tokens[0].used_at is None
+
+        old_token = managerws.make_token(
+            {"uid": user_id, "secret": old_secret}, "password-reset"
+        )
+        assert self.client.get(f"/reset-password/{old_token}").status_code == 200
