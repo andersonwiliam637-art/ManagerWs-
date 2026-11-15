@@ -18,7 +18,7 @@ def normalize_redis_storage_uri(raw_value: str | None, *, is_production: bool) -
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         value = value[1:-1].strip()
 
-    if not value:
+    if not value or value == "memory://":
         if is_production:
             raise RuntimeError(
                 "REDIS_URL debe configurarse en producción con una URL Redis rediss:// o redis://."
