@@ -1071,6 +1071,7 @@ def login():
             # Clear the previous signed session before establishing a new identity.
             session.clear()
             session['user_id'] = user.id
+            session['role'] = user.role
             session.permanent = True
             user.last_login = utcnow()
             audit('LOGIN_SUCCESS', actor_user_id=user.id)
