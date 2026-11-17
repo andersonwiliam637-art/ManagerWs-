@@ -33,7 +33,11 @@ from redis_config import normalize_redis_storage_uri
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
 
-IS_PRODUCTION = os.environ.get('FLASK_ENV') == 'production'
+IS_PRODUCTION = (
+    os.environ.get('FLASK_ENV', '').strip().lower() == 'production'
+    or os.environ.get('RENDER', '').strip().lower() == 'true'
+    or bool(os.environ.get('RENDER_SERVICE_ID'))
+)
 SECRET_KEY = os.environ.get('SECRET_KEY')
 if IS_PRODUCTION and not SECRET_KEY:
     raise RuntimeError('SECRET_KEY debe estar definida en producción.')
@@ -1048,9 +1052,15 @@ def index():
 @limiter.limit('15 per minute')
 def login():
     if request.method == 'POST':
-        username = (request.form.get('username') or '').strip()
+        login_identifier = (request.form.get('username') or '').strip()
         password = request.form.get('password') or ''
-        user = User.query.filter_by(username=username).first()
+        # Accept the account username or its registered email address.
+        user = User.query.filter(
+            or_(
+                User.username == login_identifier,
+                func.lower(User.email) == login_identifier.lower(),
+            )
+        ).first()
         # Always perform a password-hash verification, including for unknown users,
         # to reduce username-enumeration through response timing.
         password_ok = check_password_hash(user.password, password) if user else check_password_hash(DUMMY_PASSWORD_HASH, password)
@@ -1066,7 +1076,7 @@ def login():
             audit('LOGIN_SUCCESS', actor_user_id=user.id)
             db.session.commit()
             return redirect(url_for('index'))
-        logger.warning('Intento de login fallido para usuario=%s', username[:80])
+        logger.warning('Intento de login fallido para identificador=%s', login_identifier[:80])
         flash('Credenciales incorrectas.', 'danger')
     return render_template('login.html')
 
