@@ -2443,6 +2443,9 @@ with app.app_context():
         db.session.add(org)
         db.session.flush()
         db.session.add(Membership(organization_id=org.id, user_id=admin.id, role='owner'))
+        # The production audit table enforces (organization_id, actor_user_id)
+        # against membership. Persist the membership before adding its audit row.
+        db.session.flush()
         audit('ADMIN_CREATED', actor_user_id=admin.id, organization_id=org.id, target_type='user', target_id=admin.id)
         db.session.commit()
     elif IS_PRODUCTION and not (admin_user and admin_pass and admin_email):
