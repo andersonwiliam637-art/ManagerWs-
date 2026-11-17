@@ -27,7 +27,7 @@
       {% else %}
       <form method="POST" action="{{ url_for('login') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <label>Usuario</label>
+        <label>Usuario o correo electrónico</label>
         <input name="username" required autocomplete="username" placeholder="Su usuario">
         <label>Contraseña</label>
         <input name="password" type="password" required autocomplete="current-password" placeholder="••••••••">
